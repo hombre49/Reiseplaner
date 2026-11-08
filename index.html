@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v2">
+<meta name="reiseplaner-version" content="web-v3">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -524,6 +524,24 @@ const SUGGEST = {
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 /* ---------- Ausgaben: Rechenlogik (entspricht src/lib/services/budget.ts) ---------- */
 const EXP_CATS = ["Anreise & Verkehr", "Unterkunft", "Essen & Trinken", "Eintritte & Aktivitäten", "Einkäufe", "Sonstiges"];
+/* Vorauswahl „Wofür?“ je Kategorie; eigene Einträge kommen aus den bisherigen Ausgaben dazu */
+const EXP_TITLES = {
+  "Anreise & Verkehr": ["Taxi", "Grab/Bolt", "Tuk-Tuk", "Skytrain/U-Bahn", "Bus", "Zug", "Boot/Fähre", "Mietwagen", "Tanken", "Parken", "Maut", "Trinkgeld"],
+  "Unterkunft": ["Hotel", "Kurtaxe/City Tax", "Kaution", "Minibar", "Wäscheservice", "Trinkgeld"],
+  "Essen & Trinken": ["Frühstück", "Mittagessen", "Abendessen", "Streetfood/Snack", "Kaffee", "Getränke", "Supermarkt", "Trinkgeld"],
+  "Eintritte & Aktivitäten": ["Eintritt", "Führung", "Ausflug", "Massage", "Show", "Trinkgeld"],
+  "Einkäufe": ["Souvenirs", "Kleidung", "Apotheke", "Drogerie", "Geschenke", "Trinkgeld"],
+  "Sonstiges": ["SIM-Karte/Daten", "Geldautomat-Gebühr", "Visum", "Wäscherei", "Trinkgeld"],
+};
+function expTitles(cat) {
+  const base = EXP_TITLES[cat] || [];
+  const own = [...new Set(db.expenses.filter((e) => e.category === cat && !e.sourceType && e.title && e.title !== cat).map((e) => e.title))]
+    .filter((x) => !base.includes(x)).sort((a, b) => a.localeCompare(b, "de"));
+  const list = [...base, ...own];
+  if (!list.includes("Trinkgeld")) list.push("Trinkgeld");
+  return list;
+}
+const expTitleOpts = (cat) => `<option value="">– bitte wählen –</option>${expTitles(cat).map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("")}<option value="__eigen">+ Eigener Eintrag …</option>`;
 /** Betrag aus Eingabe lesen: akzeptiert 1.500, 1500,50, 58.40, 1 500 € */
 const num = (v) => {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -819,6 +837,7 @@ function stayFields(p, v, req) {
   return `
     <label class="f full" for="f-${p}name">Name *<input id="f-${p}name" name="${p}name" value="${esc(v.name)}"></label>
     <label class="f full" for="f-${p}address">Adresse<input id="f-${p}address" name="${p}address" value="${esc(v.address)}"></label>
+    ${gmBtn(`f-${p}name`, `f-${p}address`)}
     ${dtField(`f-${p}cid`, `${p}ciDate`, "Check-in Datum", ci.d, "date", true)}
     ${dtField(`f-${p}cit`, `${p}ciTime`, "Check-in Uhrzeit", ci.t, "time")}
     ${dtField(`f-${p}cod`, `${p}coDate`, "Check-out Datum", co.d, "date", true)}
@@ -895,6 +914,7 @@ function excursionForm(x) {
     <label class="f full" for="x-title">Was? *<input id="x-title" name="title" value="${esc(v.title)}" placeholder="z. B. Stadtführung, Bootstour"></label>
     <label class="f" for="x-provider">Anbieter<input id="x-provider" name="provider" value="${esc(v.provider)}"></label>
     <label class="f" for="x-meet">Treffpunkt<input id="x-meet" name="meetingPoint" value="${esc(v.meetingPoint)}"></label>
+    ${gmBtn("", "x-meet", "📍 Treffpunkt aus Google Maps")}
     ${dtField("x-date", "date", "Datum", v.date, "date", true)}
     <span class="hint" style="align-self:end">Ein Ausflug über mehrere Tage: je Tag einen Eintrag anlegen.</span>
     ${dtField("x-start", "startTime", "Beginn", v.startTime, "time")}
@@ -997,6 +1017,7 @@ function parkingForm(x) {
   return `<form class="panel grid2" data-form="parking">
     <label class="f full" for="pk-name">Parkhaus / Parkplatz *<input id="pk-name" name="name" value="${esc(v.name)}" placeholder="z. B. Parkhaus P4, Flughafen Düsseldorf"></label>
     <label class="f full" for="pk-addr">Adresse<input id="pk-addr" name="address" value="${esc(v.address)}"></label>
+    ${gmBtn("pk-name", "pk-addr")}
     ${dtField("pk-sd", "startDate", "Einfahrt Datum", a.d, "date", true)}
     ${dtField("pk-st", "startTime", "Einfahrt Uhrzeit", a.t, "time")}
     ${dtField("pk-ed", "endDate", "Ausfahrt Datum", b.d, "date", true)}
@@ -1063,6 +1084,42 @@ const inFc = (t, eur) => { const fc = t.foreignCurrency, r = num(t.fxRate); retu
 let mapApp = "google";
 try { mapApp = localStorage.getItem(KEY + ".karten") || "google"; } catch {}
 /** Adresse antippen = Route in der Karten-App */
+/* Aus Google Maps (oder Apple Karten) kopierten Ort zerlegen: Name, Adresse, Link */
+function gmParse(txt) {
+  const s0 = String(txt || "").replace(/\r/g, "");
+  const urls = s0.match(/https?:\/\/\S+/g) || [];
+  const lines = s0.replace(/https?:\/\/\S+/g, "\n").split("\n")
+    .map((l) => l.trim().replace(/^["„“‚']+|["“”‘’']+$/g, "").trim())
+    .filter((l) => l && !/^(in )?google maps|apple (maps|karten)|^(sieh|schau) dir/i.test(l));
+  let name = "", address = "";
+  if (lines.length >= 2) { name = lines[0]; address = lines.slice(1).join(", "); }
+  else if (lines.length === 1) address = lines[0];
+  if (!name && !address && urls.length) {
+    const u = urls[0];
+    const m = u.match(/\/maps\/place\/([^/@?]+)/);
+    if (m) {
+      const t = decodeURIComponent(m[1].replace(/\+/g, " ")); const parts = t.split(/,\s*/);
+      if (parts.length > 1) { name = parts[0]; address = parts.slice(1).join(", "); } else address = t;
+    } else { const q = u.match(/[?&](?:q|query|daddr|address)=([^&]+)/); if (q) address = decodeURIComponent(q[1].replace(/\+/g, " ")); }
+  }
+  return { name: name.slice(0, 200), address: address.slice(0, 300), url: urls[0] || "" };
+}
+const gmBtn = (nameId, addrId, label = "📍 Aus Google Maps einfügen") => `<div class="gm full" data-gname="${nameId}" data-gaddr="${addrId}">
+  <div class="row" style="gap:8px;align-items:center"><button type="button" class="ghost" data-act="gm-paste">${label}</button><span class="hint">In Google Maps: Ort öffnen → Teilen → Kopieren, dann hier tippen.</span></div>
+  <div class="gm-box stack" hidden style="gap:6px;margin-top:6px"><textarea rows="3" aria-label="Aus Google Maps einfügen" placeholder="Hier lange tippen → „Einfügen“"></textarea>
+  <div class="row" style="gap:6px"><button type="button" data-act="gm-apply">Übernehmen</button><button type="button" class="link" data-act="gm-close">Abbrechen</button></div></div>
+  <span class="hint gm-msg" aria-live="polite"></span></div>`;
+function gmApply(w, txt) {
+  const r = gmParse(txt), msg = w.querySelector(".gm-msg");
+  if (!r.name && !r.address) { msg.textContent = r.url ? "Google Maps hat nur einen Kurzlink übergeben. Tipp in Google Maps auf die Adresse (sie wird dann kopiert) und füge sie hier ein." : "Nichts erkannt. Bitte in Google Maps Teilen → Kopieren wählen."; return false; }
+  const nEl = w.dataset.gname ? document.getElementById(w.dataset.gname) : null, aEl = document.getElementById(w.dataset.gaddr);
+  if (nEl) { if (r.name && !nEl.value.trim()) nEl.value = r.name; if (aEl) aEl.value = r.address || (nEl.value.trim() ? "" : r.name); }
+  else if (aEl) aEl.value = [r.name, r.address].filter(Boolean).join(", ");
+  [nEl, aEl].forEach((el) => el && el.dispatchEvent(new Event("input", { bubbles: true })));
+  msg.textContent = "Übernommen ✓ Bitte kurz prüfen.";
+  w.querySelector(".gm-box").hidden = true;
+  return true;
+}
 const mapLink = (text, cls = "small") => (text ? `<a class="maplink ${cls}" href="${mapApp === "apple" ? "https://maps.apple.com/?q=" : "https://www.google.com/maps/search/?api=1&query="}${encodeURIComponent(text)}" target="_blank" rel="noreferrer">📍 ${esc(text)}</a>` : "");
 /** Code oder Nummer zum Antippen = in die Zwischenablage */
 const copyBtn = (v) => (v ? `<button type="button" class="code" data-act="copy" data-v="${esc(v)}" title="Kopieren">${esc(v)}</button>` : "");
@@ -1193,6 +1250,8 @@ function emergencyForm(t) {
       <label class="f" for="em-t-embassy">Deutsche Botschaft / Konsulat <i>German embassy</i><input id="em-t-embassy" name="t_embassy" value="${esc(te.embassy)}"></label>
       <label class="f" for="em-t-embphone">Telefon Botschaft <i>Embassy phone</i><input id="em-t-embphone" name="t_embphone" value="${esc(te.embassyPhone)}"></label>
       <label class="f" for="em-t-hospital">Nächstes Krankenhaus <i>Nearest hospital</i><input id="em-t-hospital" name="t_hospital" value="${esc(te.hospital)}"></label>
+      ${gmBtn("", "em-t-embassy", "📍 Botschaft aus Google Maps")}
+      ${gmBtn("", "em-t-hospital", "📍 Krankenhaus aus Google Maps")}
       <label class="f full" for="em-t-notes">Hinweise <i>Notes</i><textarea id="em-t-notes" name="t_notes" rows="2">${esc(te.notes)}</textarea></label></div>` : ""}
     <p class="err" data-err hidden></p>
     <div class="row"><button>Speichern</button><button type="button" class="ghost" data-act="em-cancel">Abbrechen</button></div>
@@ -1442,7 +1501,7 @@ function fieldsHtml(kind, v = {}) {
     if (f.t === "select") ctl = `<select id="${id}" name="${f.n}">${f.opts.map(([k, l]) => `<option value="${k}" ${v[f.n] === k ? "selected" : ""}>${l}</option>`).join("")}</select>`;
     else if (f.t === "textarea") ctl = `<textarea id="${id}" name="${f.n}" rows="2">${val}</textarea>`;
     else ctl = `<input id="${id}" name="${f.n}" type="${f.t || "text"}" ${f.t === "number" ? 'step="0.01" min="0"' : ""} value="${val}" ${f.req ? "required" : ""}>`;
-    return `<label class="f ${f.full ? "full" : ""}" for="${id}">${f.l}${f.req ? " *" : ""}${ctl}</label>`;
+    return `<label class="f ${f.full ? "full" : ""}" for="${id}">${f.l}${f.req ? " *" : ""}${ctl}</label>` + (f.n === "address" ? gmBtn(FIELDS[kind].some((x) => x.n === "name") ? `f-${kind}-name` : "", id) : "");
   }).join("");
 }
 
@@ -1719,13 +1778,14 @@ function viewExpenses() {
       <span class="eyebrow full">Schnell erfassen</span>
       <label class="f" for="e-amt">Betrag *<input id="e-amt" name="amount" inputmode="decimal" required placeholder="0,00" autocomplete="off"><span class="fieldmsg" id="e-conv" aria-live="polite"></span></label>
       <label class="f" for="e-cur">Währung<select id="e-cur" name="currency">${(fc ? [fc, "EUR"] : ["EUR"]).map((c) => `<option>${esc(c)}</option>`).join("")}</select></label>
-      <label class="f" for="e-cat">Kategorie<input id="e-cat" name="category" list="exp-cats" value="Essen &amp; Trinken"></label>
-      <label class="f" for="e-title">Wofür?<input id="e-title" name="title" placeholder="z. B. Abendessen"></label>
+      ${(() => { const names = s.cats.map((c) => c.name); const cur = names.includes(st.expCat) ? st.expCat : names.includes("Essen & Trinken") ? "Essen & Trinken" : names[0]; return `
+      <label class="f" for="e-cat">Kategorie<select id="e-cat" name="category">${names.map((c) => `<option value="${esc(c)}" ${c === cur ? "selected" : ""}>${esc(c)}</option>`).join("")}<option value="__neu">+ Neue Kategorie …</option></select><input id="e-catnew" name="categoryNew" placeholder="Name der neuen Kategorie" hidden style="margin-top:6px" aria-label="Neue Kategorie"></label>
+      <label class="f" for="e-title">Wofür?<select id="e-title" name="title">${expTitleOpts(cur)}</select><input id="e-titlenew" name="titleNew" placeholder="z. B. Nachtmarkt" hidden style="margin-top:6px" aria-label="Eigener Eintrag"></label>`; })()}
       <label class="f" for="e-date">Datum<input id="e-date" name="date" type="date" value="${today}"></label>
       <label class="f" for="e-pm">Zahlart<select id="e-pm" name="paymentMethod"><option value="CARD">Karte</option><option value="CASH">bar</option></select></label>
-      <datalist id="exp-cats">${s.cats.map((c) => `<option value="${esc(c.name)}">`).join("")}</datalist>
       <label class="row full" for="e-plan" style="gap:8px"><input type="checkbox" id="e-plan" name="planned"><span class="small">Noch nicht bezahlt</span></label>
       ${st.error && !st.payId && !st.budgetOpen ? `<p class="err full">${esc(st.error)}</p>` : ""}
+      <p class="err full" data-err hidden></p>
       <div class="full"><button>Erfassen</button></div>
     </form>
     <div class="panel"><span class="eyebrow">Nach Kategorie</span>
@@ -2455,6 +2515,15 @@ $app.addEventListener("click", (e) => {
   }
   if (b.dataset.act === "seg-add") { addSeg(b.closest("[data-leg]")); onDraft(); return; }
   if (b.dataset.act === "seg-del") { const legEl = b.closest("[data-leg]"); b.closest("[data-seg]").remove(); renumberSegs(legEl); onDraft(); return; }
+  if (b.dataset.act === "gm-paste") {
+    const w = b.closest(".gm"); const box = w.querySelector(".gm-box");
+    const open = () => { box.hidden = false; w.querySelector(".gm-msg").textContent = ""; box.querySelector("textarea").focus(); };
+    const looksMap = (t) => /maps|goo\.gl/i.test(t) || (t.split("\n").filter((l) => l.trim()).length <= 4 && /\d/.test(t));
+    if (navigator.clipboard?.readText) navigator.clipboard.readText().then((t) => { t = String(t || "").slice(0, 600); if (t && looksMap(t) && gmApply(w, t)) return; open(); if (t) box.querySelector("textarea").value = t; }, open); else open();
+    return;
+  }
+  if (b.dataset.act === "gm-apply") { const w = b.closest(".gm"); gmApply(w, w.querySelector(".gm-box textarea").value); return; }
+  if (b.dataset.act === "gm-close") { const w = b.closest(".gm"); w.querySelector(".gm-box").hidden = true; return; }
   if (b.dataset.act === "stay-add") { addStay(b.closest("form")); onDraft(); return; }
   if (b.dataset.act === "stay-del") { const f = b.closest("form"); b.closest("[data-stay]").remove(); renumberStays(f); onDraft(); return; }
   if (b.dataset.act === "leg") {
@@ -2552,7 +2621,12 @@ $app.addEventListener("submit", (e) => {
   const today = new Date().toLocaleDateString("sv-SE");
   if (kind === "expense") {
     const amt = num(o.amount);
-    if (!(amt > 0)) { st.error = "Bitte einen Betrag größer 0 eingeben, z. B. 12,50."; render(); return; }
+    if (!(amt > 0)) return fail(f, "Bitte einen Betrag größer 0 eingeben, z. B. 12,50.");
+    if (o.category === "__neu" && !o.categoryNew) return fail(f, "Bitte einen Namen für die neue Kategorie eingeben.");
+    if (o.title === "__eigen" && !o.titleNew) return fail(f, "Bitte eintragen, wofür die Ausgabe war.");
+    o.category = (o.category === "__neu" ? o.categoryNew : o.category) || "Sonstiges";
+    o.title = o.title === "__eigen" ? o.titleNew : o.title;
+    st.expCat = o.category;
     db.expenses.push({ id: uid(), tripId: st.tripId, date: o.date || today, title: o.title || o.category || "Ausgabe", category: o.category || "Sonstiges", amount: String(amt), currency: o.currency || "EUR", status: o.planned ? "PLANNED" : "PAID", paymentMethod: o.paymentMethod || "CARD", notes: "" });
     save(); reset(); render(); document.getElementById("e-amt")?.focus(); return;
   }
@@ -2660,7 +2734,15 @@ function checkField(x) {
 
 $app.addEventListener("input", (e) => { if (e.target.tagName === "INPUT" && suggKind(e.target)) showSugg(e.target); else closeSugg(); });
 $app.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSugg(); });
-$app.addEventListener("change", (e) => { if (e.target.id === "p-cat") { const n = document.getElementById("p-catnew"); n.hidden = e.target.value !== "__neu"; if (!n.hidden) n.focus(); } });
+$app.addEventListener("change", (e) => {
+  if (e.target.id === "p-cat") { const n = document.getElementById("p-catnew"); n.hidden = e.target.value !== "__neu"; if (!n.hidden) n.focus(); }
+  if (e.target.id === "e-cat") {
+    const n = document.getElementById("e-catnew"), t = document.getElementById("e-title"), tn = document.getElementById("e-titlenew");
+    n.hidden = e.target.value !== "__neu"; t.innerHTML = expTitleOpts(e.target.value === "__neu" ? "" : e.target.value); tn.hidden = true; tn.value = "";
+    if (!n.hidden) n.focus();
+  }
+  if (e.target.id === "e-title") { const tn = document.getElementById("e-titlenew"); tn.hidden = e.target.value !== "__eigen"; if (!tn.hidden) tn.focus(); }
+});
 function pkCount() {
   const n = $app.querySelectorAll("[data-pkitem]:checked").length;
   const c = document.getElementById("pk-count"), btn = document.getElementById("pk-take");
