@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v9">
+<meta name="reiseplaner-version" content="web-v10">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -553,7 +553,7 @@ const SUGGEST = {
   Elektronik: ["Handy", "Ladekabel", "Powerbank", "Reiseadapter", "Kopfhörer", "Kamera", "E-Reader"],
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
-const APP_VERSION = "web-v9";
+const APP_VERSION = "web-v10";
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
 const PAYS = { CARD: "Karte", CASH: "bar" };
@@ -2231,6 +2231,11 @@ function buildReport(t, o) {
   }
 
   const preset = PRESETS.find((p) => p.k === o.preset);
+  // Excel-Spaltenbreiten nach Inhalt (mind. Überschrift, höchstens 60 Zeichen)
+  for (const sec of secs) for (const d of [sec.data, sec.data2]) if (d?.cols) d.cols.forEach((c, i) => {
+    const longest = Math.max(String(c.h).length, ...d.rows.map((r) => Math.max(0, ...String(r[i] ?? "").split("\n").map((l) => l.length))));
+    c.wch = Math.min(60, Math.max(8, longest + 2));
+  });
   return { title: t.title, subtitle: `${t.destination ? t.destination + " · " : ""}${fDate(t.startDate)} – ${fDate(t.endDate)}`, label: preset ? preset.l : "Auswahl", range: o.from || o.to ? `${o.from ? isoToDe(o.from) : "Anfang"} – ${o.to ? isoToDe(o.to) : "Ende"}` : "ganze Reise", sections: secs };
 }
 
@@ -2370,6 +2375,7 @@ async function webPdfDoc() {
     setLineWidth(n) { lw = n; },
     addPage() { pages.push(d.addPage([PW * MM, PH * MM])); cur = pages.length - 1; },
     getNumberOfPages() { return pages.length; },
+    getTextWidth(t) { return wid(t); },
     setPage(i) { cur = i - 1; },
     splitTextToSize(text, w) {
       const out = [];
@@ -2456,10 +2462,15 @@ async function makePdf(r) {
           y += ls.length * lh(10) + 2;
         }
       } else if (b.t === "kv") {
+        // Spaltenbreite nach dem längsten Begriff, höchstens 45 % der Breite; lange Begriffe umbrechen
+        font("bold", 10);
+        const KW = Math.min(W * 0.45, Math.max(30, ...b.rows.map(([k]) => doc.getTextWidth(pdfSafe(k)))) + 4);
         for (const [k, v] of b.rows) {
-          font("normal", 10); const vl = lines(v, W - 42); ensure(vl.length * lh(10));
-          font("bold", 10); doc.text(pdfSafe(k), M, y);
-          font("normal", 10); doc.text(vl, M + 42, y); y += vl.length * lh(10) + 0.8;
+          font("bold", 10); const kl = doc.splitTextToSize(pdfSafe(k), KW - 4);
+          font("normal", 10); const vl = lines(v, W - KW);
+          const n = Math.max(kl.length, vl.length); ensure(n * lh(10));
+          font("bold", 10); doc.text(kl, M, y);
+          font("normal", 10); doc.text(vl, M + KW, y); y += n * lh(10) + 1.2;
         }
         y += 2;
       } else if (b.t === "check") {
