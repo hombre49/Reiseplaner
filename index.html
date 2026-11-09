@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v7">
+<meta name="reiseplaner-version" content="web-v9">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -553,7 +553,7 @@ const SUGGEST = {
   Elektronik: ["Handy", "Ladekabel", "Powerbank", "Reiseadapter", "Kopfhörer", "Kamera", "E-Reader"],
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
-const APP_VERSION = "web-v7";
+const APP_VERSION = "web-v9";
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
 const PAYS = { CARD: "Karte", CASH: "bar" };
@@ -563,7 +563,7 @@ const EXC_TYPES = ["Stadtführung", "Bootstour", "Tempeltour", "Tagesausflug", "
 const PACK_CATS = ["Kleidung", "Hygiene", "Dokumente", "Elektronik", "Medikamente", "Sonstiges"];
 /* Eigene Einträge: dauerhaft (profile.lists, für alle Reisen) oder nur für eine Reise (trip.lists) */
 const OWN = "__own";
-const LIST_NAMES = { transportType: "Verkehr – Art", payment: "Zahlart", placeCat: "Orte – Kategorie", excType: "Ausflüge – Art", expCat: "Ausgaben – Kategorie", packCat: "Packliste – Kategorie" };
+const LIST_NAMES = { vaccine: "EMERGENCY – Impfungen", transportType: "Verkehr – Art", payment: "Zahlart", placeCat: "Orte – Kategorie", excType: "Ausflüge – Art", expCat: "Ausgaben – Kategorie", packCat: "Packliste – Kategorie" };
 const listName = (k) => LIST_NAMES[k] || (k.startsWith("expTitle:") ? `Ausgaben – Wofür? (${k.slice(9)})` : k.startsWith("packItem:") ? `Packliste – Dinge (${k.slice(9)})` : k);
 const ownVals = (key) => [...(profile.lists?.[key] || []), ...(trip()?.lists?.[key] || [])];
 function choiceOpts(key, base, value, blank) {
@@ -1292,7 +1292,36 @@ const ROWS = {
   v: { title: "Impfung", add: "+ Impfung", fields: [["name", "Impfung / Vaccine"], ["date", "Datum / Date", "date"], ["next", "Auffrischung / Booster due", "date"]] },
   c: { title: "Kontakt", add: "+ Notfallkontakt", fields: [["name", "Name"], ["relation", "Beziehung / Relationship"], ["phone", "Telefon / Phone"]] },
 };
+const VACCINES = ["Hepatitis A", "Hepatitis B", "Hepatitis A+B", "Tetanus/Diphtherie/Keuchhusten", "Polio", "Masern/Mumps/Röteln", "Typhus", "Tollwut", "Japanische Enzephalitis", "Gelbfieber", "Cholera", "Dengue", "FSME", "Meningokokken", "Influenza", "COVID-19"];
+const todayIso = () => new Date().toLocaleDateString("sv-SE");
+const vBoost = (v) => [...(Array.isArray(v.boosters) ? v.boosters : []), ...(v.next && v.next <= todayIso() ? [v.next] : [])].filter(Boolean);
+const vDoses = (v) => (Array.isArray(v.doses) && v.doses.length ? v.doses : v.date ? [v.date] : []).filter(Boolean);
+/** gleiche Impfstoffe zu einer Zeile zusammenfassen, Dosen nach Datum */
+function normVacc(list) {
+  const out = [];
+  for (const v of list || []) {
+    const k = (v.name || "").trim().toLowerCase();
+    const hit = k && out.find((o) => o.name.trim().toLowerCase() === k);
+    if (hit) { hit.doses = [...new Set([...hit.doses, ...vDoses(v)])].sort(); hit.boosters = [...new Set([...hit.boosters, ...vBoost(v)])].sort(); }
+    else out.push({ name: v.name || "", doses: [...new Set(vDoses(v))].sort(), boosters: [...new Set(vBoost(v))].sort() });
+  }
+  return out;
+}
+const doseField = (rp, j, val) => dtField(`em-${rp}dose${j}`, `${rp}dose${j}`, `${j + 1}. Dosis <i>dose ${j + 1}</i>`, val || "", "date");
+const boostField = (rp, j, val) => dtField(`em-${rp}boost${j}`, `${rp}boost${j}`, `Auffrischung <i>booster</i>${j ? " " + (j + 1) : ""}`, val || "", "date");
+function vaccRow(prefix, v = {}) {
+  const doses = vDoses(v); if (!doses.length) doses.push("");
+  const boosts = vBoost(v);
+  return `<div class="em-row grid2" data-row="v" data-prefix="${prefix}">
+    ${choice({ id: `em-${prefix}name`, name: `${prefix}name`, key: "vaccine", label: "Impfung / Vaccine", value: v.name || "", base: pairs(VACCINES), blank: "– bitte wählen –" })}
+    <span></span>
+    <div class="full grid2" data-doses style="gap:10px">${doses.map((d, j) => doseField(prefix, j, d)).join("")}</div>
+    <div class="full grid2" data-boosts style="gap:10px">${boosts.map((d, j) => boostField(prefix, j, d)).join("")}</div>
+    <div class="row full between"><span class="row" style="gap:8px"><button type="button" class="ghost" data-act="em-add-dose">+ weitere Dosis</button><button type="button" class="ghost" data-act="em-add-boost">+ Auffrischung</button></span><button type="button" class="link" data-act="em-del-row">Impfung entfernen</button></div></div>`;
+}
+const vaccText = (v, sep = " · ") => [v.name, ...vDoses(v).map((d, j) => `${j + 1}.: ${isoToDe(d)}`), vBoost(v).length ? "Auffrischung / booster: " + vBoost(v).map(isoToDe).join(", ") : ""].filter(Boolean).join(sep);
 function rowHtml(list, prefix, v = {}) {
+  if (list === "v") return vaccRow(prefix, v);
   const def = ROWS[list];
   return `<div class="em-row grid2" data-row="${list}" data-prefix="${prefix}">
     ${def.fields.map(([k, l, type]) => type === "date" ? dtField(`em-${prefix}${k}`, `${prefix}${k}`, l, v[k] || "", "date") : `<label class="f" for="em-${prefix}${k}">${l}<input id="em-${prefix}${k}" name="${prefix}${k}" value="${esc(v[k])}"></label>`).join("")}
@@ -1311,7 +1340,7 @@ function personBlock(pp, p = {}) {
     ${area("allergies", lbl("allergies"), p.allergies)}
     ${area("conditions", lbl("conditions"), p.conditions)}
     ${list("m", p.meds)}
-    ${list("v", p.vacc)}
+    ${list("v", normVacc(p.vacc))}
     ${list("c", p.contacts)}
     ${inp("doctorName", `${lbl("doctor")} – Name`, p.doctorName)}${inp("doctorPhone", "Telefon / Phone", p.doctorPhone)}
     ${inp("insName", lbl("ins"), p.insName)}${inp("insNumber", "Versichertennummer / Member no.", p.insNumber)}
@@ -1360,7 +1389,18 @@ function readEmergency(f) {
     if (birth && birth > new Date().toLocaleDateString("sv-SE")) birth = String(+birth.slice(0, 4) - 100) + birth.slice(4);
     if (birth === null) return { error: "Geburtsdatum nicht erkannt. Bitte so eingeben: 03.05.1958." };
     const p = { name: g(pp + "name"), birth, blood: g(pp + "blood"), donor: g(pp + "donor"), allergies: g(pp + "allergies"), conditions: g(pp + "conditions"), doctorName: g(pp + "doctorName"), doctorPhone: g(pp + "doctorPhone"), insName: g(pp + "insName"), insNumber: g(pp + "insNumber"), tiName: g(pp + "tiName"), tiNumber: g(pp + "tiNumber"), tiPhone: g(pp + "tiPhone"), lang: g(pp + "lang"), notes: g(pp + "notes"), meds: [], vacc: [], contacts: [] };
-    for (const [key, target] of [["m", "meds"], ["v", "vacc"], ["c", "contacts"]]) for (const r of b.querySelectorAll(`[data-list="${key}"] [data-row]`)) {
+    for (const r of b.querySelectorAll(`[data-list="v"] [data-row]`)) {
+      const rp = r.dataset.prefix, doses = [], boosters = [];
+      for (const inp of r.querySelectorAll("input[name]")) {
+        const m = inp.name.slice(rp.length).match(/^(dose|boost)\d+$/); if (!inp.name.startsWith(rp) || !m) continue;
+        const d = parseDateDE(inp.value.trim(), new Date().getFullYear()); if (d === null) return { error: "Impfung: Datum nicht erkannt. Bitte so eingeben: 15.04.2024." };
+        if (d) (m[1] === "dose" ? doses : boosters).push(d);
+      }
+      const name = g(rp + "name");
+      if (name || doses.length || boosters.length) p.vacc.push({ name, doses: doses.sort(), boosters: boosters.sort() });
+    }
+    p.vacc = normVacc(p.vacc);
+    for (const [key, target] of [["m", "meds"], ["c", "contacts"]]) for (const r of b.querySelectorAll(`[data-list="${key}"] [data-row]`)) {
       const rp = r.dataset.prefix, o = {};
       for (const [k, , type] of ROWS[key].fields) {
         if (type === "date") { const d = parseDateDE(g(rp + k), new Date().getFullYear()); if (d === null) return { error: `${ROWS[key].title}: Datum nicht erkannt. Bitte so eingeben: 15.04.2024.` }; o[k] = d; }
@@ -1395,7 +1435,7 @@ function viewEmergency(t) {
       ${dd("doctor", (p.doctorName || p.doctorPhone) && `${esc(p.doctorName)} ${copyBtn(p.doctorPhone)}`)}
       ${dd("ins", (p.insName || p.insNumber) && `${esc(p.insName)}${p.insNumber ? " · Nr. " + copyBtn(p.insNumber) : ""}`)}
       ${dd("travelIns", (p.tiName || p.tiNumber || p.tiPhone) && `${esc(p.tiName)}${p.tiNumber ? " · Nr. " + copyBtn(p.tiNumber) : ""}${p.tiPhone ? "<br>Notruf / Hotline " + copyBtn(p.tiPhone) : ""}`)}
-      ${dd("vacc", p.vacc?.length && `<ul>${p.vacc.map((v) => `<li><b>${esc(v.name)}</b>${v.date ? " · " + isoToDe(v.date) : ""}${v.next ? ` · <span class="${v.next < new Date().toLocaleDateString("sv-SE") ? "em-due" : ""}">Auffrischung / booster ${isoToDe(v.next)}</span>` : ""}</li>`).join("")}</ul>`)}
+      ${dd("vacc", p.vacc?.length && `<ul>${normVacc(p.vacc).map((v) => `<li><b>${esc(v.name)}</b>${vDoses(v).map((d, j) => ` · ${j + 1}.: ${isoToDe(d)}`).join("")}${vBoost(v).length ? ` · Auffrischung / booster: ${vBoost(v).map(isoToDe).join(", ")}` : ""}</li>`).join("")}</ul>`)}
       ${dd("donor", p.donor && (p.donor === "ja" ? "ja / yes" : "nein / no"))}
       ${dd("lang", p.lang && esc(p.lang))}
       ${dd("notes", p.notes && plain(p.notes))}
@@ -2176,11 +2216,11 @@ function buildReport(t, o) {
       if (kv.length) blocks.push({ t: "kv", rows: kv });
       if (p.meds?.length) blocks.push({ t: "table", cols: [{ h: L2("meds"), w: 45 }, { h: "Dosis / Dose", w: 25 }, { h: "Einnahme / When", w: 30 }], rows: p.meds.map((m) => [m.name, m.dose, m.when]) });
       if (p.contacts?.length) blocks.push({ t: "table", cols: [{ h: L2("contacts"), w: 40 }, { h: "Beziehung / Relationship", w: 30 }, { h: "Telefon / Phone", w: 30 }], rows: p.contacts.map((c) => [c.name, c.relation, c.phone]) });
-      if (p.vacc?.length) blocks.push({ t: "table", cols: [{ h: L2("vacc"), w: 46 }, { h: "Datum / Date", w: 24 }, { h: "Auffrischung / Booster", w: 30 }], rows: p.vacc.map((v) => [v.name, v.date ? isoToDe(v.date) : "", v.next ? isoToDe(v.next) : ""]) });
+      if (p.vacc?.length) blocks.push({ t: "table", cols: [{ h: L2("vacc"), w: 34 }, { h: "Dosen / Doses", w: 36 }, { h: "Auffrischung / Booster", w: 30 }], rows: normVacc(p.vacc).map((v) => [v.name, vDoses(v).map((d, j) => `${j + 1}.: ${isoToDe(d)}`).join("\n"), vBoost(v).map(isoToDe).join("\n")]) });
       for (const [k, v] of kv) data.push([p.name, k, v]);
       for (const m of p.meds || []) data.push([p.name, L2("meds"), [m.name, m.dose, m.when].filter(Boolean).join(" · ")]);
       for (const c of p.contacts || []) data.push([p.name, L2("contacts"), [c.name, c.relation, c.phone].filter(Boolean).join(" · ")]);
-      for (const v of p.vacc || []) data.push([p.name, L2("vacc"), [v.name, v.date && isoToDe(v.date), v.next && "Auffrischung " + isoToDe(v.next)].filter(Boolean).join(" · ")]);
+      for (const v of normVacc(p.vacc)) data.push([p.name, L2("vacc"), vaccText(v)]);
     }
     const te = t.emergency || {};
     const tkv = [["Notruf vor Ort / Local emergency number", te.local], ["Deutsche Botschaft / German embassy", [te.embassy, te.embassyPhone].filter(Boolean).join(", ")], ["Nächstes Krankenhaus / Nearest hospital", te.hospital], ["Hinweise / Notes", te.notes]].filter((r) => r[1]);
@@ -2278,7 +2318,7 @@ function webPlainDownload(file, note) {
   note(`„${file.name}“ wurde heruntergeladen. Auf dem iPad meist in der Dateien-App unter „Downloads“.`);
 }
 async function webShare(file, note) {
-  try { await navigator.share({ files: [file], title: file.name }); note(`„${file.name}“ übergeben.`); return true; }
+  try { await navigator.share({ files: [file] }); note(`„${file.name}“ übergeben.`); return true; }
   catch (e) {
     if (e && e.name === "AbortError") { note("Abgebrochen. Die Datei wurde nicht gespeichert."); return true; }
     return false;
@@ -2694,6 +2734,14 @@ $app.addEventListener("click", (e) => {
   if (b.dataset.act === "copy") { const v = b.dataset.v; try { navigator.clipboard.writeText(v).then(() => toast(`„${v}“ kopiert`), () => toast("Kopieren ist hier nicht möglich")); } catch { toast("Kopieren ist hier nicht möglich"); } return; }
   if (b.dataset.act === "em-add-person") { emAddPerson(b.closest("form")); onDraft(); return; }
   if (b.dataset.act === "em-del-person") { b.closest("[data-person]").remove(); onDraft(); return; }
+  if (b.dataset.act === "em-add-boost") {
+    const r = b.closest("[data-row]"), box = r.querySelector("[data-boosts]"), n = box.querySelectorAll("input[name]").length;
+    box.insertAdjacentHTML("beforeend", boostField(r.dataset.prefix, n, "")); onDraft(); return;
+  }
+  if (b.dataset.act === "em-add-dose") {
+    const r = b.closest("[data-row]"), box = r.querySelector("[data-doses]"), n = box.querySelectorAll("input[name]").length ? Math.max(...[...box.querySelectorAll("input[name]")].map((i) => +(i.name.match(/dose(\d+)$/)?.[1] ?? -1))) + 1 : 0;
+    box.insertAdjacentHTML("beforeend", doseField(r.dataset.prefix, n, "")); onDraft(); return;
+  }
   if (b.dataset.act === "em-add-row") { emAddRow(b.closest("[data-person]"), b.dataset.id); onDraft(); return; }
   if (b.dataset.act === "em-del-row") { b.closest("[data-row]").remove(); onDraft(); return; }
   if (b.dataset.act === "backup-save") {
