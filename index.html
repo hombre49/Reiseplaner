@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v5">
+<meta name="reiseplaner-version" content="web-v6">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -529,6 +529,7 @@ const SUGGEST = {
   Elektronik: ["Handy", "Ladekabel", "Powerbank", "Reiseadapter", "Kopfhörer", "Kamera", "E-Reader"],
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
+const APP_VERSION = "web-v6";
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
 const PAYS = { CARD: "Karte", CASH: "bar" };
@@ -1620,6 +1621,7 @@ function viewTrips() {
       <label class="row" for="map-google" style="gap:6px"><input type="radio" id="map-google" name="mapapp" value="google" ${mapApp === "google" ? "checked" : ""}>Google Maps</label>
       <label class="row" for="map-apple" style="gap:6px"><input type="radio" id="map-apple" name="mapapp" value="apple" ${mapApp === "apple" ? "checked" : ""}>Apple Karten</label></div>
     <p class="hint">Flughafendaten: OurAirports (gemeinfrei). Fluggesellschaften: OpenFlights, Open Database License, Stand 2012.</p>
+    <p class="hint"><b>Version ${APP_VERSION}</b></p>
   </div>`;
 }
 
