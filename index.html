@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v10">
+<meta name="reiseplaner-version" content="web-v11">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -553,7 +553,7 @@ const SUGGEST = {
   Elektronik: ["Handy", "Ladekabel", "Powerbank", "Reiseadapter", "Kopfhörer", "Kamera", "E-Reader"],
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
-const APP_VERSION = "web-v10";
+const APP_VERSION = "web-v11";
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
 const PAYS = { CARD: "Karte", CASH: "bar" };
@@ -1443,7 +1443,8 @@ function viewEmergency(t) {
   return `<div class="stack em" style="gap:14px">
     <div class="em-head"><div><h2>EMERGENCY</h2><span>Notfallinformationen · Emergency medical information</span></div><button class="em-btn" data-act="em-edit">Bearbeiten</button></div>
     ${ps.length ? ps.map(person).join("") : `<div class="empty stack" style="align-items:center"><span>Noch keine Notfalldaten hinterlegt. Hier gehört alles hin, was Ärzte brauchen, wenn du selbst nicht sprechen kannst: Blutgruppe, Allergien, Medikamente, Impfungen, Notfallkontakte, Versicherung.</span><button data-act="em-edit">Jetzt eintragen</button></div>`}
-    ${t && Object.values(te).some(Boolean) ? `<div class="panel em-card"><span class="eyebrow">Für diese Reise · For this trip: ${esc(t.title)}</span><dl>
+    ${t && (Object.values(te).some(Boolean) || stayLines(t).length) ? `<div class="panel em-card"><span class="eyebrow">Für diese Reise · For this trip: ${esc(t.title)}</span><dl>
+      ${stayLines(t).map(({ a }) => `<dt>Unterkunft <i>Accommodation</i></dt><dd><b>${esc(a.name)}</b>${a.address ? `<br>${mapLink(a.address, "")}` : ""}${a.phone ? ` ${copyBtn(a.phone)}` : ""}${a.checkIn ? `<br><span class="small muted">${isoToDe(a.checkIn.slice(0, 10))} – ${isoToDe((a.checkOut || "").slice(0, 10))}</span>` : ""}</dd>`).join("")}
       ${te.local ? `<dt>Notruf vor Ort <i>Local emergency number</i></dt><dd>${copyBtn(te.local)}</dd>` : ""}
       ${te.embassy || te.embassyPhone ? `<dt>Deutsche Botschaft <i>German embassy</i></dt><dd>${mapLink(te.embassy, "")} ${copyBtn(te.embassyPhone)}</dd>` : ""}
       ${te.hospital ? `<dt>Nächstes Krankenhaus <i>Nearest hospital</i></dt><dd>${mapLink(te.hospital, "")}</dd>` : ""}
@@ -1915,6 +1916,8 @@ function viewItinerary() {
 /* übliche Spanne: Fremdwährung je 1 EUR (bewusst großzügig) */
 const FX_RANGE = { THB: [25, 60], USD: [0.7, 1.6], GBP: [0.6, 1.1], CHF: [0.7, 1.4], JPY: [100, 260], CNY: [5, 11], AUD: [1.2, 2.3], CAD: [1.1, 2], NZD: [1.3, 2.5], SGD: [1.1, 2], HKD: [6, 12], INR: [60, 140], IDR: [12000, 26000], VND: [20000, 36000], PHP: [45, 85], MYR: [3.5, 6.5], KRW: [1100, 1900], TWD: [25, 45], AED: [3, 5], ZAR: [14, 28], MXN: [15, 30], BRL: [4, 8.5], PLN: [3.8, 5], CZK: [22, 28], HUF: [330, 460], SEK: [9, 13], NOK: [9, 13.5], DKK: [7.2, 7.7], ISK: [130, 170], TRY: [5, 120], EGP: [15, 100], MAD: [9, 13], TND: [2.8, 4], LKR: [250, 450], KHR: [3500, 5000], LAK: [15000, 32000], MMK: [1800, 5000], NPR: [100, 190], RON: [4.5, 5.5], BGN: [1.9, 2], HRK: [7, 8], RSD: [110, 125], ILS: [3.4, 5], QAR: [3.3, 5], SAR: [3.4, 5], OMR: [0.35, 0.55], JOD: [0.65, 1.1], KES: [100, 200], TZS: [2000, 3500] };
 const fxProbe = (fc, r) => (fc && num(r) > 0 ? `Probe: 100 € ≈ ${Math.round(100 * num(r)).toLocaleString("de-DE")} ${fc}` : "");
+const stayLines = (t) => db.accommodations.filter((a) => a.tripId === t.id).sort((a, b) => (a.checkIn || "").localeCompare(b.checkIn || ""))
+  .map((a) => ({ a, text: [a.name, a.address, a.phone && "Tel. " + a.phone, a.checkIn && `${isoToDe(a.checkIn.slice(0, 10))} – ${isoToDe((a.checkOut || "").slice(0, 10))}`].filter(Boolean).join(", ") }));
 function viewHints() {
   const H = [
     ["„+ Eigener Eintrag …“ in Auswahllisten", "Der Eintrag bleibt dauerhaft in der Liste, auch für spätere Reisen. Mit dem Haken „nur für diese Reise“ gilt er nur hier. Entfernen: Startseite → „Eigene Auswahl-Einträge“ → ×."],
@@ -2208,7 +2211,9 @@ function buildReport(t, o) {
   if (o.parts.has("emergency")) {
     const blocks = [], data = [];
     const L2 = (k) => `${EML[k][0]} / ${EML[k][1]}`;
+    const starts = [];
     for (const p of profile.persons || []) {
+      starts.push(blocks.length);
       blocks.push({ t: "sub", text: p.name || "Person" });
       const kv = [[L2("birth"), p.birth ? isoToDe(p.birth) : ""], [L2("blood"), p.blood], [L2("allergies"), p.allergies], [L2("conditions"), p.conditions], [L2("donor"), p.donor === "ja" ? "ja / yes" : p.donor === "nein" ? "nein / no" : ""],
         [L2("doctor"), [p.doctorName, p.doctorPhone].filter(Boolean).join(", ")], [L2("ins"), [p.insName, p.insNumber && "Nr. " + p.insNumber].filter(Boolean).join(", ")],
@@ -2223,11 +2228,19 @@ function buildReport(t, o) {
       for (const v of normVacc(p.vacc)) data.push([p.name, L2("vacc"), vaccText(v)]);
     }
     const te = t.emergency || {};
-    const tkv = [["Notruf vor Ort / Local emergency number", te.local], ["Deutsche Botschaft / German embassy", [te.embassy, te.embassyPhone].filter(Boolean).join(", ")], ["Nächstes Krankenhaus / Nearest hospital", te.hospital], ["Hinweise / Notes", te.notes]].filter((r) => r[1]);
-    if (tkv.length) { blocks.push({ t: "sub", text: `Für diese Reise / For this trip: ${t.title}` }, { t: "kv", rows: tkv }); for (const [k, v] of tkv) data.push(["Reise / Trip", k, v]); }
-    blocks.push({ t: "kv", rows: [["Kartensperre / Card blocking", "+49 116 116"]] });
+    const tkv = [...stayLines(t).map((x) => ["Unterkunft / Accommodation", x.text]), ["Notruf vor Ort / Local emergency number", te.local], ["Deutsche Botschaft / German embassy", [te.embassy, te.embassyPhone].filter(Boolean).join(", ")], ["Nächstes Krankenhaus / Nearest hospital", te.hospital], ["Hinweise / Notes", te.notes]].filter((r) => r[1]);
+    const tail = [];
+    if (tkv.length) { tail.push({ t: "sub", text: `Für diese Reise / For this trip: ${t.title}` }, { t: "kv", rows: tkv }); for (const [k, v] of tkv) data.push(["Reise / Trip", k, v]); }
+    tail.push({ t: "kv", rows: [["Kartensperre / Card blocking", "+49 116 116"]] });
+    // Notfallkarte mit mehreren Personen: je Person eine eigene Seite, jeweils mit den Reiseangaben
+    if (starts.length > 1 && o.parts.size === 1) {
+      starts.forEach((st0, i) => secs.push({ key: "emergency", title: "EMERGENCY – Notfallinformationen", blocks: [...blocks.slice(st0, starts[i + 1] ?? blocks.length), ...tail],
+        ...(i === 0 ? { data: { name: "Notfall", cols: [{ h: "Person", wch: 20 }, { h: "Angabe / Item", wch: 34 }, { h: "Wert / Value", wch: 50 }], rows: data } } : {}) }));
+    } else {
+    blocks.push(...tail);
     secs.push({ key: "emergency", title: "EMERGENCY – Notfallinformationen", blocks: blocks.length > 1 ? blocks : [{ t: "empty", text: "Noch keine Notfalldaten hinterlegt." }],
       data: { name: "Notfall", cols: [{ h: "Person", wch: 20 }, { h: "Angabe / Item", wch: 34 }, { h: "Wert / Value", wch: 50 }], rows: data } });
+    }
   }
 
   const preset = PRESETS.find((p) => p.k === o.preset);
@@ -2432,26 +2445,34 @@ function loadLib(k) {
 /* ---------- Baustein: PDF (A4, Kopf- und Fußzeile, Blocksatz) ---------- */
 const pdfSafe = (x) => String(x ?? "").replace(/→/g, "->").replace(/[✓✔]/g, "x").replace(/×/g, "x").replace(/[^\x00-\xFF€–—‚„“”‘’•…‰]/g, "");
 async function makePdf(r) {
+  // Notfallkarte: so lange verkleinern, bis alles auf eine Seite passt
+  const one = r.sections.length > 0 && r.sections.every((x) => x.key === "emergency");
+  for (const Z of one ? [1, 0.92, 0.85, 0.78, 0.72, 0.66, 0.6] : [1]) {
+    const res = await renderPdf(r, Z);
+    if (!one || res.pages <= r.sections.length || Z === 0.6) return res.buf;
+  }
+}
+async function renderPdf(r, Z) {
   const doc = await webPdfDoc();
-  const M = 18, W = 210 - 2 * M, TOP = 24, BOTTOM = 279;
+  const M = 18, W = 210 - 2 * M, TOP = Z < 1 ? 20 : 24, BOTTOM = 279;
   const INK = [22, 32, 29], MUTED = [93, 107, 102], ACC = [15, 92, 82], LINE = [211, 218, 215], SUNK = [230, 234, 232];
-  const lh = (pt) => pt * 0.3528 * 1.3;
+  const lh = (pt) => pt * 0.3528 * (Z < 1 ? 1.22 : 1.3);
   let y = TOP;
-  const font = (style, size, color = INK) => { doc.setFont("helvetica", style); doc.setFontSize(size); doc.setTextColor(...color); };
+  const font = (style, size, color = INK) => { doc.setFont("helvetica", style); doc.setFontSize(size * Z); doc.setTextColor(...color); };
   const page = () => { doc.addPage(); y = TOP; };
   const ensure = (h) => { if (y + h > BOTTOM) page(); };
   const lines = (text, width) => pdfSafe(text).split("\n").flatMap((p) => (p ? doc.splitTextToSize(p, width) : [""]));
 
-  font("bold", 20, ACC); doc.text(pdfSafe(r.title), M, y + 4); y += 11;
-  font("normal", 10.5, MUTED); doc.text(pdfSafe(r.subtitle), M, y); y += 9;
+  font("bold", 20, ACC); doc.text(pdfSafe(r.title), M, y + 4 * Z); y += 11 * Z;
+  font("normal", 10.5, MUTED); doc.text(pdfSafe(r.subtitle), M, y); y += 9 * Z;
 
   r.sections.forEach((s, si) => {
     if (si > 0) page();
-    font("bold", 15, ACC); doc.text(pdfSafe(s.title), M, y + 2); y += 4;
-    doc.setDrawColor(...ACC); doc.setLineWidth(0.4); doc.line(M, y, M + W, y); y += 6;
+    font("bold", 15, ACC); doc.text(pdfSafe(s.title), M, y + 2 * Z); y += 4 * Z;
+    doc.setDrawColor(...ACC); doc.setLineWidth(0.4); doc.line(M, y, M + W, y); y += 6 * Z;
     for (const b of s.blocks) {
-      if (b.t === "sub") { ensure(14); y += 2; font("bold", 11, ACC); doc.text(pdfSafe(b.text), M, y); y += 5; }
-      else if (b.t === "empty") { ensure(7); font("italic", 9.5, MUTED); doc.text(pdfSafe(b.text), M, y); y += 6; }
+      if (b.t === "sub") { ensure(14 * Z); y += 2 * Z; font("bold", 11, ACC); doc.text(pdfSafe(b.text), M, y); y += 5 * Z; }
+      else if (b.t === "empty") { ensure(7 * Z); font("italic", 9.5, MUTED); doc.text(pdfSafe(b.text), M, y); y += 6 * Z; }
       else if (b.t === "para") {
         font("normal", 10);
         for (const par of b.text.split(/\n+/)) {
@@ -2459,7 +2480,7 @@ async function makePdf(r) {
           ensure(ls.length * lh(10));
           // Blocksatz; jsPDF setzt die letzte Zeile des Absatzes linksbündig
           doc.text(ls, M, y, { maxWidth: W, align: "justify" });
-          y += ls.length * lh(10) + 2;
+          y += ls.length * lh(10) + 2 * Z;
         }
       } else if (b.t === "kv") {
         // Spaltenbreite nach dem längsten Begriff, höchstens 45 % der Breite; lange Begriffe umbrechen
@@ -2470,23 +2491,23 @@ async function makePdf(r) {
           font("normal", 10); const vl = lines(v, W - KW);
           const n = Math.max(kl.length, vl.length); ensure(n * lh(10));
           font("bold", 10); doc.text(kl, M, y);
-          font("normal", 10); doc.text(vl, M + KW, y); y += n * lh(10) + 1.2;
+          font("normal", 10); doc.text(vl, M + KW, y); y += n * lh(10) + 1.2 * Z;
         }
-        y += 2;
+        y += 2 * Z;
       } else if (b.t === "check") {
         for (const g of b.groups) {
-          ensure(12); font("bold", 10.5, ACC); doc.text(pdfSafe(g.title), M, y); y += 5.5;
+          ensure(12 * Z); font("bold", 10.5, ACC); doc.text(pdfSafe(g.title), M, y); y += 5.5 * Z;
           for (const it of g.items) {
-            ensure(6); doc.setDrawColor(...INK); doc.setLineWidth(0.3); doc.rect(M, y - 3.3, 3.6, 3.6);
+            ensure(6 * Z); doc.setDrawColor(...INK); doc.setLineWidth(0.3); doc.rect(M, y - 3.3, 3.6, 3.6);
             if (it.done) { doc.setLineWidth(0.5); doc.line(M + 0.7, y - 1.5, M + 1.6, y - 0.4); doc.line(M + 1.6, y - 0.4, M + 3.1, y - 2.9); }
-            font("normal", 10, it.done ? MUTED : INK); doc.text(pdfSafe(it.text), M + 6, y); y += 5.6;
+            font("normal", 10, it.done ? MUTED : INK); doc.text(pdfSafe(it.text), M + 6, y); y += 5.6 * Z;
           }
-          y += 2;
+          y += 2 * Z;
         }
       } else if (b.t === "table") {
         const tot = b.cols.reduce((a, c) => a + c.w, 0);
         const ws = b.cols.map((c) => (W * c.w) / tot);
-        const pad = 1.6, fs = 8.6, L = lh(fs);
+        const pad = 1.6 * Z, fs = 8.6, L = lh(fs);
         const drawRow = (cells, head) => {
           font(head ? "bold" : "normal", fs);
           const ls = cells.map((c, i) => lines(cellText(c), ws[i] - 2 * pad));
@@ -2496,7 +2517,7 @@ async function makePdf(r) {
           let x = M;
           ls.forEach((cl, i) => {
             cl.forEach((t, j) => {
-              const ty = y + pad + L * (j + 1) - 0.9;
+              const ty = y + pad + L * (j + 1) - 0.9 * Z;
               if (b.cols[i].r) doc.text(t, x + ws[i] - pad, ty, { align: "right" }); else doc.text(t, x + pad, ty);
             });
             x += ws[i];
@@ -2504,10 +2525,10 @@ async function makePdf(r) {
           y += h;
           doc.setDrawColor(...LINE); doc.setLineWidth(0.2); doc.line(M, y, M + W, y);
         };
-        ensure(16);
+        ensure(16 * Z);
         drawRow(b.cols.map((c) => c.h), true);
         for (const row of b.rows) drawRow(row, false);
-        y += 4;
+        y += 4 * Z;
       }
     }
   });
@@ -2515,13 +2536,13 @@ async function makePdf(r) {
   const n = doc.getNumberOfPages();
   for (let i = 1; i <= n; i++) {
     doc.setPage(i);
-    font("normal", 8, MUTED);
+    font("normal", 8 / Z, MUTED);
     doc.text(pdfSafe(`${r.title} · ${r.label}`), M, 12);
     doc.text(pdfSafe(`Stand ${new Date().toLocaleDateString("de-DE")}`), M + W, 12, { align: "right" });
     doc.setDrawColor(...LINE); doc.setLineWidth(0.2); doc.line(M, 14, M + W, 14);
     doc.text(`Seite ${i} von ${n}`, M + W, 289, { align: "right" });
   }
-  return await doc.output("arraybuffer");
+  return { buf: await doc.output("arraybuffer"), pages: n };
 }
 
 /* ---------- Baustein: Word (.docx, eigene XML-Teile, gepackt mit JSZip) ---------- */
