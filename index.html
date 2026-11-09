@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v6">
+<meta name="reiseplaner-version" content="web-v7">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -417,7 +417,31 @@ function enqueue(id, fn) {
     .finally(() => { pending.set(id, pending.get(id) - 1); showSync(); });
   chains.set(id, next);
 }
+/* Sicherungsstand je Gerät: letzte Sicherung und erste Änderung danach */
+const BK = KEY + ".sicherung";
+let bkMem = null;
+const bkGet = () => { try { return JSON.parse(localStorage.getItem(BK)) || bkMem || {}; } catch { return bkMem || {}; } };
+const bkSet = (v) => { bkMem = v; try { localStorage.setItem(BK, JSON.stringify(v)); } catch {} };
+function markChanged() { const b = bkGet(); if (!b.changed) bkSet({ ...b, changed: new Date().toISOString() }); }
+function markBackedUp() { bkSet({ last: new Date().toISOString(), changed: "" }); }
+function bkState() {
+  const b = bkGet();
+  if (!db.trips.length) return null;
+  const ref = b.changed ? (b.last || b.changed) : "";
+  const age = ref ? Math.floor((Date.now() - Date.parse(ref)) / 864e5) : 0;
+  return { last: b.last, changed: Boolean(b.changed), age, level: !b.changed ? "ok" : age >= 10 ? "red" : age >= 7 ? "yellow" : "info" };
+}
+function bkBanner() {
+  const s0 = bkState();
+  if (!s0 || (s0.level !== "yellow" && s0.level !== "red")) return "";
+  const red = s0.level === "red";
+  return `<div class="row between" role="status" style="gap:10px;margin-bottom:14px;padding:10px 14px;border-radius:12px;border:1px solid ${red ? "#b3261e" : "#d4a300"};background:${red ? "#fde2e0" : "#fff4cc"};color:#1b1b1b">
+    <span class="small"><b>${red ? "Dringend sichern:" : "Bitte sichern:"}</b> ${s0.last ? `letzte Sicherung vor ${s0.age} Tagen` : `noch keine Sicherung, Änderungen seit ${s0.age} Tagen`}, seitdem wurde etwas geändert.</span>
+    <button type="button" class="${red ? "danger" : "ghost"}" data-act="backup-save">Jetzt sichern</button></div>`;
+}
+const bkLine = () => { const s0 = bkState(); if (!s0) return ""; return s0.last ? `Letzte Sicherung auf diesem Gerät: ${isoToDe(s0.last.slice(0, 10))}${s0.changed ? ", seitdem geändert" : ", seitdem nichts geändert"}.` : "Auf diesem Gerät wurde noch keine Sicherung gespeichert."; };
 function save() {
+  markChanged();
   if (mode === "local") { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch {} return; }
   if (mode !== "cloud") return;
   const ids = new Set([...db.trips.map((t) => t.id), ...written.keys()]);
@@ -430,7 +454,7 @@ function save() {
   }
 }
 /** Formular offen oder Eingabefeld aktiv: Fremdänderungen nicht sofort neu zeichnen. */
-const busy = () => dirty || Boolean(st.editing || st.openDay || st.payId || st.tripForm || st.budgetOpen || st.emEdit) ||
+const busy = () => dirty || Boolean(st.editing || st.openDay || st.payId || st.expEdit || st.imp || st.tripForm || st.budgetOpen || st.emEdit) ||
   (document.activeElement && $app.contains(document.activeElement) && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName));
 
 function loadLocalProfile() { try { return JSON.parse(localStorage.getItem(KEY + ".notfall")) || { persons: [] }; } catch { return { persons: [] }; } }
@@ -501,7 +525,7 @@ function addSample() {
 }
 
 /* ---------- Zustand ---------- */
-const st = { tripId: null, tab: "overview", editing: null, confirmDel: null, error: null, tripForm: null, openDay: null, payId: null, budgetOpen: false, leg: "OUT", emEdit: false, emGlobal: false };
+const st = { tripId: null, tab: "overview", editing: null, confirmDel: null, error: null, tripForm: null, openDay: null, payId: null, budgetOpen: false, leg: "OUT", emEdit: false, emGlobal: false, expEdit: null, imp: null };
 const $app = document.getElementById("app");
 
 /* ---------- Hilfen ---------- */
@@ -529,7 +553,7 @@ const SUGGEST = {
   Elektronik: ["Handy", "Ladekabel", "Powerbank", "Reiseadapter", "Kopfhörer", "Kamera", "E-Reader"],
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
-const APP_VERSION = "web-v6";
+const APP_VERSION = "web-v7";
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
 const PAYS = { CARD: "Karte", CASH: "bar" };
@@ -1349,6 +1373,7 @@ function readEmergency(f) {
   return { persons, trip: { local: g("t_local"), embassy: g("t_embassy"), embassyPhone: g("t_embphone"), hospital: g("t_hospital"), notes: g("t_notes") } };
 }
 function saveProfile() {
+  markChanged();
   if (mode === "local") { try { localStorage.setItem(KEY + ".notfall", JSON.stringify(profile)); } catch {} return; }
   if (mode !== "cloud") return;
   const body = JSON.parse(JSON.stringify(profile));
@@ -1391,30 +1416,69 @@ function viewEmergency(t) {
 function backupData() {
   return { app: "Reiseplaner", format: 1, created: new Date().toISOString(), trips: db.trips.map((t) => bundle(t.id)), profile };
 }
+const UNDO = KEY + ".rueckgaengig";
+let undoMem = null;
+const undoData = () => { try { return JSON.parse(localStorage.getItem(UNDO)) || undoMem; } catch { return undoMem; } };
+const undoSet = (v) => { undoMem = v; try { if (v) localStorage.setItem(UNDO, JSON.stringify(v)); else localStorage.removeItem(UNDO); } catch {} };
+function removeTrip(id) { for (const k of COLLS) db[k] = db[k].filter((x) => x.tripId !== id); db.trips = db.trips.filter((t) => t.id !== id); }
+function addBundle(b) { db.trips.push(b.trip); for (const k of COLLS) db[k].push(...(Array.isArray(b[k]) ? b[k] : [])); }
 function importBackup(text) {
   let d;
   try { d = JSON.parse(text); } catch { return "Die Datei ist keine Reiseplaner-Sicherung."; }
   if (d?.app !== "Reiseplaner" || !Array.isArray(d.trips)) return "Die Datei ist keine Reiseplaner-Sicherung.";
-  let added = 0, skipped = 0;
-  for (const b of d.trips) {
-    if (!b?.trip?.id) continue;
-    if (db.trips.some((t) => t.id === b.trip.id)) { skipped++; continue; }
-    db.trips.push(b.trip);
-    for (const k of COLLS) db[k].push(...(Array.isArray(b[k]) ? b[k] : []));
-    added++;
+  const bundles = d.trips.filter((b) => b?.trip?.id);
+  const conflicts = bundles.filter((b) => db.trips.some((t) => t.id === b.trip.id)).map((b) => b.trip.id);
+  const persons = d.profile?.persons || [];
+  const profConflict = persons.length && profile.persons?.length && JSON.stringify(persons) !== JSON.stringify(profile.persons);
+  if (conflicts.length || profConflict) { st.imp = { d, conflicts, profConflict }; return "Einige Reisen sind schon vorhanden. Bitte oben auswählen, was ersetzt werden soll."; }
+  return applyImport(d, [], false);
+}
+function applyImport(d, replaceIds, replaceProfile) {
+  const bundles = d.trips.filter((b) => b?.trip?.id);
+  const undo = { added: [], replaced: [], persons: null, at: new Date().toISOString() };
+  let added = 0, replaced = 0, kept = 0;
+  for (const b of bundles) {
+    const exists = db.trips.some((t) => t.id === b.trip.id);
+    if (!exists) { addBundle(b); undo.added.push(b.trip.id); added++; continue; }
+    if (!replaceIds.includes(b.trip.id)) { kept++; continue; }
+    undo.replaced.push(bundle(b.trip.id)); removeTrip(b.trip.id); addBundle(b); replaced++;
   }
   let prof = "";
-  if (d.profile?.persons?.length) {
-    if (!profile.persons?.length) { profile = { ...profile, persons: d.profile.persons }; saveProfile(); prof = " Notfalldaten übernommen."; }
-    else prof = " Vorhandene Notfalldaten wurden nicht überschrieben.";
-  }
+  const persons = d.profile?.persons || [];
+  if (persons.length && !profile.persons?.length) { undo.persons = []; profile = { ...profile, persons }; saveProfile(); prof = " Notfalldaten übernommen."; }
+  else if (persons.length && replaceProfile) { undo.persons = profile.persons; profile = { ...profile, persons }; saveProfile(); prof = " Notfalldaten ersetzt."; }
   if (d.profile?.lists && typeof d.profile.lists === "object") {
     profile.lists ||= {}; let n = 0;
     for (const [k, arr] of Object.entries(d.profile.lists)) if (Array.isArray(arr)) for (const v of arr) { const a = (profile.lists[k] ||= []); if (typeof v === "string" && !a.includes(v)) { a.push(v); n++; } }
     if (n) { saveProfile(); prof += ` ${n} eigene Auswahl-${n === 1 ? "Eintrag" : "Einträge"} übernommen.`; }
   }
+  if (undo.added.length || undo.replaced.length || undo.persons) undoSet(undo);
   save();
-  return `${added} ${added === 1 ? "Reise" : "Reisen"} übernommen${skipped ? `, ${skipped} schon vorhanden und unverändert gelassen` : ""}.${prof}`;
+  const parts = [];
+  if (added) parts.push(`${added} ${added === 1 ? "Reise" : "Reisen"} neu übernommen`);
+  if (replaced) parts.push(`${replaced} ${replaced === 1 ? "Reise" : "Reisen"} ersetzt`);
+  if (kept) parts.push(`${kept} unverändert behalten`);
+  return (parts.join(", ") || "Nichts übernommen") + "." + prof;
+}
+function importDialog() {
+  const { d, conflicts, profConflict } = st.imp;
+  const when = d.created ? new Date(d.created).toLocaleString("de-DE", { dateStyle: "medium", timeStyle: "short" }) : "unbekannt";
+  return `<form class="stack" data-form="imp" style="gap:10px;padding:12px;border:1px solid var(--line, #ddd);border-radius:12px">
+    <b>Sicherung vom ${esc(when)}</b>
+    ${conflicts.map((id) => { const t = d.trips.find((b) => b.trip.id === id).trip; return `<div class="stack" style="gap:4px"><span>„${esc(t.title)}“ ist schon vorhanden.</span>
+      <div class="row" style="gap:14px"><label class="row" for="imp-r-${id}" style="gap:6px"><input type="radio" id="imp-r-${id}" name="t_${id}" value="replace" checked><span>durch Stand aus der Sicherung ersetzen</span></label>
+      <label class="row" for="imp-k-${id}" style="gap:6px"><input type="radio" id="imp-k-${id}" name="t_${id}" value="keep"><span>behalten</span></label></div></div>`; }).join("")}
+    ${profConflict ? `<div class="stack" style="gap:4px"><span>Die Notfalldaten unterscheiden sich.</span><div class="row" style="gap:14px"><label class="row" for="imp-pr" style="gap:6px"><input type="radio" id="imp-pr" name="prof" value="replace"><span>ersetzen</span></label><label class="row" for="imp-pk" style="gap:6px"><input type="radio" id="imp-pk" name="prof" value="keep" checked><span>behalten</span></label></div></div>` : ""}
+    <span class="hint">Ersetzt wird die ganze Reise mit allen Reitern. Der bisherige Stand lässt sich danach mit „Letztes Laden rückgängig machen“ zurückholen.</span>
+    <div class="row" style="gap:8px"><button>Übernehmen</button><button type="button" class="ghost" data-act="imp-cancel">Abbrechen</button></div></form>`;
+}
+function undoImport() {
+  const u = undoData(); if (!u) return "Es gibt nichts rückgängig zu machen.";
+  for (const id of u.added || []) removeTrip(id);
+  for (const b of u.replaced || []) { if (!b?.trip?.id) continue; removeTrip(b.trip.id); addBundle(b); }
+  if (u.persons) { profile = { ...profile, persons: u.persons }; saveProfile(); }
+  undoSet(null); save();
+  return "Das letzte Laden wurde rückgängig gemacht.";
 }
 
 /* ---------- Tagesplan: Einträge aus allen Reitern automatisch ---------- */
@@ -1579,10 +1643,17 @@ function validate(kind, o) {
 }
 
 /* ---------- Ansichten ---------- */
+let autoOpened = false;
+const todayISO = () => new Date().toLocaleDateString("sv-SE");
 function render() {
   if (mode !== "loading") ensureLists();
+  if (mode !== "loading" && !autoOpened) {
+    autoOpened = true;
+    const td = todayISO(), cur = !st.tripId && !st.tripForm && !st.emGlobal ? db.trips.find((t) => t.startDate <= td && td <= t.endDate) : null;
+    if (cur) { st.tripId = cur.id; st.tab = "overview"; }
+  }
   if (mode === "loading") { $app.innerHTML = `<p class="empty">Deine Reisen werden geladen …</p>${loadNote ? `<p class="err" style="margin-top:10px">${esc(loadNote)}</p>` : ""}`; showSync(); return; }
-  $app.innerHTML = (loadNote ? `<p class="banner small" style="margin-bottom:14px">${esc(loadNote)}</p>` : "") + (st.tripForm ? viewTripForm() : st.emGlobal ? `<div class="stack" style="gap:14px"><button class="link" data-act="em-close" style="align-self:flex-start;padding:0">← Alle Reisen</button>${viewEmergency(null)}</div>` : st.tripId ? viewTrip() : viewTrips());
+  $app.innerHTML = (loadNote ? `<p class="banner small" style="margin-bottom:14px">${esc(loadNote)}</p>` : "") + (st.tripForm ? "" : bkBanner()) + (st.tripForm ? viewTripForm() : st.emGlobal ? `<div class="stack" style="gap:14px"><button class="link" data-act="em-close" style="align-self:flex-start;padding:0">← Alle Reisen</button>${viewEmergency(null)}</div>` : st.tripId ? viewTrip() : viewTrips());
   $app.querySelectorAll("form [data-leg]").forEach(renumberSegs);
   $app.querySelectorAll("form [data-seg]").forEach(applyType);
   $app.querySelectorAll('form[data-form="accommodations"]').forEach(renumberStays);
@@ -1611,9 +1682,12 @@ function viewTrips() {
     ${sec("Bevorstehend", up)}${sec("Vergangen", past)}
     ${db.trips.length ? `<p class="small muted">Zum Ausprobieren: <button class="link" data-act="sample">Beispielreise hinzufügen</button></p>` : ""}
     <div class="panel stack" style="gap:8px"><span class="eyebrow">Sicherung</span>
-      <span class="small muted">Alle Reisen und Notfalldaten als eine Datei sichern oder eine Sicherung wieder einspielen. Beim Einspielen wird nichts überschrieben, es kommen nur fehlende Reisen dazu.</span>
+      <span class="small muted">Alle Reisen und Notfalldaten als eine Datei sichern oder eine Sicherung wieder einspielen. Beim Einspielen kommen fehlende Reisen dazu; bei schon vorhandenen fragt die App, ob ersetzt oder behalten werden soll.</span>
       <div class="row"><button class="ghost" data-act="backup-save">Sicherung speichern</button><label class="btn ghost-btn" for="bk-file">Sicherung laden<input type="file" id="bk-file" accept=".json,application/json" hidden></label></div>
-      <p class="hint" id="bk-note" aria-live="polite"></p></div>
+      ${st.imp ? importDialog() : ""}
+      ${undoData() ? `<div class="row" style="gap:8px"><button type="button" class="link" data-act="imp-undo">Letztes Laden rückgängig machen</button></div>` : ""}
+      <p class="hint">${esc(bkLine())}</p>
+      <p class="hint" id="bk-note" aria-live="polite">${esc(st.bkNote || "")}</p></div>
     ${(() => { const L = Object.entries(profile.lists || {}).filter(([, a]) => a?.length); return `<details class="panel"><summary><b>Eigene Auswahl-Einträge</b> <span class="muted small">${L.reduce((n, [, a]) => n + a.length, 0)} dauerhaft gespeichert · hier entfernen</span></summary>
       <div class="stack" style="gap:10px;margin-top:10px">${L.length ? L.sort((a, b) => listName(a[0]).localeCompare(listName(b[0]), "de")).map(([k, a]) => `<div class="stack" style="gap:4px"><span class="eyebrow">${esc(listName(k))}</span><div class="row" style="gap:6px;flex-wrap:wrap">${a.map((v) => `<span class="chip" style="text-transform:none;letter-spacing:0">${esc(v)} <button type="button" class="link" data-act="own-del" data-key="${esc(k)}" data-v="${esc(v)}" aria-label="${esc(v)} entfernen">×</button></span>`).join("")}</div></div>`).join("") : `<span class="small muted">Noch keine. Eigene Einträge entstehen über „+ Eigener Eintrag …“ in den Auswahllisten.</span>`}
       <span class="hint">Entfernen ändert keine gespeicherten Einträge, der Wert verschwindet nur aus der Auswahl.</span></div></details>`; })()}
@@ -1657,6 +1731,20 @@ function viewTrip() {
     ${body()}`;
 }
 
+function todayPanel(t, byDay) {
+  const td = todayISO();
+  if (!(t.startDate <= td && td <= t.endDate)) return "";
+  const now = new Date(), nowS = `${td}T${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  const stay = of("accommodations").find((a) => a.checkIn.slice(0, 10) <= td && td <= (a.checkOut || "").slice(0, 10));
+  const next = of("transports").filter((x) => x.departAt >= nowS).sort(SORT.transports)[0];
+  const list = byDay[td] || [];
+  return `<div class="panel stack" style="gap:10px;border:2px solid var(--accent, #0f5c52)">
+    <div class="row between"><h2>Heute</h2><span class="small muted">${fDate(td)}</span></div>
+    ${next ? `<div class="stack" style="gap:2px"><span class="eyebrow">Nächste Fahrt</span><b>${TYPE_ICON[next.type] || "•"} ${esc(next.type === "PARKING" ? "Parken: " + next.fromLocation : `${next.fromLocation} → ${next.toLocation}`)}</b><span class="small">${esc(dtShort(next.departAt))}${[next.carrier, next.number].filter(Boolean).length ? " · " + esc([next.carrier, next.number].filter(Boolean).join(" ")) : ""}${next.bookingRef ? " · Buchung " : ""}${next.bookingRef ? copyBtn(next.bookingRef) : ""}</span></div>` : ""}
+    ${stay ? `<div class="stack" style="gap:2px"><span class="eyebrow">Unterkunft</span><b>🏨 ${esc(stay.name)}</b>${stay.address ? `<span class="small">${mapLink(stay.address)}</span>` : ""}${stay.phone ? `<span class="small">Tel. ${copyBtn(stay.phone)}</span>` : ""}</div>` : ""}
+    <div class="stack" style="gap:2px"><span class="eyebrow">Heute geplant</span>${list.length ? `<ol class="timeline" style="margin:0">${list.map((e) => `<li><span class="time">${e.notime ? "" : fTime(e.at)}${e.home ? `<span class="hometime">🏠 ${esc(e.home)}</span>` : ""}</span><span>${e.icon}</span><span><b>${esc(e.text)}</b>${e.sub ? ` <span class="muted small">${esc(e.sub)}</span>` : ""}</span></li>`).join("")}</ol>` : `<span class="small muted">Für heute ist nichts eingetragen.</span>`}</div>
+  </div>`;
+}
 function viewOverview() {
   const t = trip(); const ev = [];
   for (const x of of("transports")) ev.push({ home: homeAt(t, x.departAt, "transport", x.type), at: x.departAt, notime: x.departAt.length <= 10, icon: TYPE_ICON[x.type], text: x.type === "PARKING" ? `Parken: ${x.fromLocation} (Einfahrt)` : `${x.fromLocation} → ${x.toLocation}`, sub: [x.journeyId ? legLabel(x) : "", x.carrier, x.number].filter(Boolean).join(" ") });
@@ -1669,6 +1757,7 @@ function viewOverview() {
   const pk = of("packing"), pl = of("places");
   const stat = (v, l) => `<div class="stat"><b>${v}</b><span class="small muted">${l}</span></div>`;
   return `<div class="stack" style="gap:18px">
+    ${todayPanel(t, byDay)}
     <div class="stats">${stat(of("transports").length, "Fahrten")}${stat(of("excursions").length, "Ausflüge")}${stat(of("accommodations").length, "Unterkünfte")}${stat(`${pl.filter((p) => p.visited).length}/${pl.length}`, "Orte besucht")}${stat(`${pk.filter((p) => p.packed).length}/${pk.length}`, "gepackt")}${(() => { const b = budgetSummary(t); const used = b.paid + b.planned; return b.budget ? stat(fEur0(used), `von ${fEur0(b.budget)} ${lamp(used, b.budget, true)}`) : stat(fEur0(b.paid), "ausgegeben"); })()}</div>
     ${num(t.tzOffset) ? `<div class="panel small">🕒 Am Reiseziel ist es ${fmtOff(Math.abs(num(t.tzOffset))).replace("+", "")} ${num(t.tzOffset) > 0 ? "später" : "früher"} als zu Hause. Unter den Uhrzeiten vor Ort steht mit 🏠 die Zeit zu Hause. Fahrten und Transfers zählen ab der Landung bis zum Rückflug dazu; Flüge davor und danach sowie das Parken nicht, deren Zeiten gelten am jeweiligen Ort.</div>` : ""}
     ${t.notes ? `<div class="panel small" style="white-space:pre-line">${esc(t.notes)}</div>` : ""}
@@ -1795,7 +1884,7 @@ function viewHints() {
     ["🏠 Zeit zu Hause", "Erscheint nur, wenn bei der Reise eine Zeitverschiebung eingestellt ist (Reise → Bearbeiten)."],
     ["Packliste, eigene Dinge", "Sie stehen künftig auch unter „Aus üblichen Dingen auswählen“, außer mit dem Haken „nur für diese Reise“."],
     ["Ausgabe", "„Zeitraum“ leer lassen = alles. „Ausgaben nur bezahlt“ blendet Offenes aus."],
-    ["Daten und Sicherung", (mode === "cloud" ? "Die Daten liegen in deinem Claude-Konto." : "Die Daten liegen nur auf diesem Gerät.") + " „Sicherung laden“ überschreibt nichts, es kommen nur fehlende Reisen dazu."],
+    ["Daten und Sicherung", (mode === "cloud" ? "Die Daten liegen in deinem Claude-Konto." : "Die Daten liegen nur auf diesem Gerät.") + " „Sicherung laden“ fragt bei schon vorhandenen Reisen: ersetzen oder behalten. „Letztes Laden rückgängig machen“ holt den vorherigen Stand zurück."],
   ];
   return `<div class="stack" style="gap:12px"><h2>Hinweise</h2><div class="panel stack" style="gap:14px">${H.map(([h, t]) => `<div class="stack" style="gap:2px"><b>${esc(h)}</b><span class="small" style="text-align:justify;hyphens:auto">${esc(t)}</span></div>`).join("")}</div></div>`;
 }
@@ -1813,10 +1902,25 @@ function budgetForm(t, s) {
     <div class="row full"><button>Speichern</button><button type="button" class="ghost" data-act="budget-toggle">Abbrechen</button></div></form>`;
 }
 
+function expenseEditForm(e) {
+  const t = trip(), fc = t.foreignCurrency, s0 = budgetSummary(t), names = s0.cats.map((c) => c.name);
+  return `<form class="panel grid2" data-form="expense-edit" data-id="${e.id}" style="margin:6px 0">
+    <span class="eyebrow full">Ausgabe bearbeiten</span>
+    <label class="f" for="ee-amt">Betrag *<input id="ee-amt" name="amount" inputmode="decimal" value="${fNum(e.amount)}"></label>
+    <label class="f" for="ee-cur">Währung<select id="ee-cur" name="currency">${[...new Set([...(fc ? [fc] : []), "EUR", e.currency || "EUR"])].map((c) => `<option ${c === (e.currency || "EUR") ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label>
+    ${choice({ id: "ee-cat", name: "category", key: "expCat", label: "Kategorie", value: e.category, base: pairs(names) })}
+    ${choice({ id: "ee-title", name: "title", key: "expTitle:", from: "ee-cat", fromVal: e.category, label: "Wofür?", value: e.title, base: pairs(expBase(e.category)), blank: "– bitte wählen –" })}
+    <label class="f" for="ee-date">Datum<input id="ee-date" name="date" type="date" value="${esc(e.date || "")}"></label>
+    ${choice({ id: "ee-pm", name: "paymentMethod", key: "payment", label: "Zahlart", value: e.paymentMethod || "CARD", base: Object.entries(PAYS) })}
+    <label class="row full" for="ee-plan" style="gap:8px"><input type="checkbox" id="ee-plan" name="planned" ${e.status === "PLANNED" ? "checked" : ""}><span class="small">Noch nicht bezahlt</span></label>
+    <p class="err full" data-err hidden></p>
+    <div class="row full"><button>Speichern</button><button type="button" class="ghost" data-act="exp-edit-cancel">Abbrechen</button></div></form>`;
+}
 function expenseRow(e) {
   const orig = e.currency && e.currency !== "EUR" ? `<span class="meta">${fNum(e.amount)} ${esc(e.currency)}</span>` : "";
   const src = e.sourceType ? `<span class="meta">· aus ${{ accommodations: "Unterkünften", transports: "Verkehr", parking: "Parken", excursions: "Ausflügen" }[e.sourceType] || "Verkehr"}</span>` : "";
   let act;
+  if (st.expEdit === e.id) return expenseEditForm(e);
   if (st.payId === e.id) {
     act = `<form class="row full" data-form="pay" data-id="${e.id}" style="gap:8px">
       <label class="f" for="pay-amt">Bezahlt (${esc(e.currency || "EUR")})<input id="pay-amt" name="amount" inputmode="decimal" value="${fNum(e.amount)}" style="width:120px"></label>
@@ -1827,7 +1931,7 @@ function expenseRow(e) {
     const left = e.status === "PLANNED" ? `<button class="link" data-act="pay" data-id="${e.id}">✓ Bezahlt</button>` : `<span class="meta">${esc(pmLabel(e.paymentMethod))}</span>`;
     const right = e.virtual ? `<span class="meta">Betrag dort ändern</span>`
       : st.confirmDel === e.id ? `<span class="confirm">Löschen? <button class="danger" data-act="del-yes" data-kind="expenses" data-id="${e.id}">Ja</button><button class="link" data-act="del-no">Nein</button></span>`
-      : `<button class="link" data-act="del" data-id="${e.id}">Löschen</button>`;
+      : `${e.sourceType ? "" : `<button class="link" data-act="exp-edit" data-id="${e.id}">Bearbeiten</button>`}<button class="link" data-act="del" data-id="${e.id}">Löschen</button>`;
     act = `<div class="row full" style="gap:6px">${left}${right}</div>`;
   }
   return `<div class="exp"><div style="min-width:0"><b>${esc(e.title)}</b> <span class="chip">${esc(e.category)}</span><br><span class="meta">${e.date ? fShort(e.date) : ""}</span> ${src}</div>
@@ -2570,7 +2674,7 @@ function viewExport() {
 const refreshPreview = () => { const el = document.getElementById("rep-preview"); if (el) el.innerHTML = reportHtml(buildReport(trip(), st.rep)); document.querySelectorAll('[data-act="preset"]').forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.id === st.rep.preset))); };
 
 /* ---------- Ereignisse ---------- */
-const reset = () => { st.editing = null; st.confirmDel = null; st.error = null; st.openDay = null; st.payId = null; st.leg = "OUT"; st.emEdit = false; dirty = false; clearDraft(); };
+const reset = () => { st.editing = null; st.confirmDel = null; st.error = null; st.openDay = null; st.payId = null; st.expEdit = null; st.bkNote = ""; st.leg = "OUT"; st.emEdit = false; dirty = false; clearDraft(); };
 
 $app.addEventListener("click", (e) => {
   if (e.target.classList?.contains("pick-native")) { try { e.target.showPicker?.(); } catch {} return; }
@@ -2592,7 +2696,14 @@ $app.addEventListener("click", (e) => {
   if (b.dataset.act === "em-del-person") { b.closest("[data-person]").remove(); onDraft(); return; }
   if (b.dataset.act === "em-add-row") { emAddRow(b.closest("[data-person]"), b.dataset.id); onDraft(); return; }
   if (b.dataset.act === "em-del-row") { b.closest("[data-row]").remove(); onDraft(); return; }
-  if (b.dataset.act === "backup-save") { const d = new Date().toLocaleDateString("sv-SE"); offerFile(`Reiseplaner_Sicherung_${d}.json`, JSON.stringify(backupData(), null, 1), (m) => { const el = document.getElementById("bk-note"); if (el) el.textContent = m; }); return; }
+  if (b.dataset.act === "backup-save") {
+    const d = new Date().toLocaleDateString("sv-SE");
+    offerFile(`Reiseplaner_Sicherung_${d}.json`, JSON.stringify(backupData(), null, 1), (m) => {
+      if (/übergeben|wurde gespeichert|heruntergeladen/.test(m)) markBackedUp();
+      st.bkNote = m; const el = document.getElementById("bk-note"); if (el) { if (!busy()) render(); } else toast(m);
+    });
+    return;
+  }
   if (b.dataset.act === "sugg") {
     const box = b.closest(".sugg"), el = document.getElementById(box.dataset.for);
     el.value = b.dataset.v; closeSugg(); onDraft();
@@ -2602,6 +2713,8 @@ $app.addEventListener("click", (e) => {
   }
   if (b.dataset.act === "seg-add") { addSeg(b.closest("[data-leg]")); onDraft(); return; }
   if (b.dataset.act === "seg-del") { const legEl = b.closest("[data-leg]"); b.closest("[data-seg]").remove(); renumberSegs(legEl); onDraft(); return; }
+  if (b.dataset.act === "imp-cancel") { st.imp = null; st.bkNote = "Laden abgebrochen, nichts geändert."; render(); return; }
+  if (b.dataset.act === "imp-undo") { st.bkNote = undoImport(); render(); return; }
   if (b.dataset.act === "own-del") {
     const a = profile.lists?.[b.dataset.key]; if (a) { profile.lists[b.dataset.key] = a.filter((x) => x !== b.dataset.v); if (!profile.lists[b.dataset.key].length) delete profile.lists[b.dataset.key]; saveProfile(); }
     const open = b.closest("details")?.open; render(); if (open) { const d = [...$app.querySelectorAll("details.panel")].find((x) => x.textContent.includes("Eigene Auswahl-Einträge")); if (d) d.open = true; }
@@ -2658,6 +2771,8 @@ $app.addEventListener("click", (e) => {
     case "budget-toggle": st.budgetOpen = !st.budgetOpen; st.error = null; break;
     case "pay": reset(); st.payId = id; break;
     case "pay-cancel": st.payId = null; st.error = null; break;
+    case "exp-edit": reset(); st.expEdit = id; break;
+    case "exp-edit-cancel": st.expEdit = null; break;
     case "add-trip-day": trip().endDate = addDays(trip().endDate, 1); save(); reset(); break;
     default: return;
   }
@@ -2698,6 +2813,10 @@ $app.addEventListener("change", (e) => {
 $app.addEventListener("submit", (e) => {
   e.preventDefault();
   const f = e.target; const kind = f.dataset.form;
+  if (kind === "imp") {
+    const fd = new FormData(f), ids = st.imp.conflicts.filter((id) => fd.get("t_" + id) === "replace");
+    const msg = applyImport(st.imp.d, ids, fd.get("prof") === "replace"); st.imp = null; st.bkNote = msg; render(); return;
+  }
   const ownErr = resolveOwn(f); if (ownErr) return fail(f, ownErr);
   const o = Object.fromEntries(new FormData(f).entries());
   for (const k in o) { if (/__(own|trip)$/.test(k)) { delete o[k]; continue; } o[k] = String(o[k]).trim(); }
@@ -2720,6 +2839,13 @@ $app.addEventListener("submit", (e) => {
     st.expCat = o.category;
     db.expenses.push({ id: uid(), tripId: st.tripId, date: o.date || today, title: o.title || o.category || "Ausgabe", category: o.category || "Sonstiges", amount: String(amt), currency: o.currency || "EUR", status: o.planned ? "PLANNED" : "PAID", paymentMethod: o.paymentMethod || "CARD", notes: "" });
     save(); reset(); render(); document.getElementById("e-amt")?.focus(); return;
+  }
+  if (kind === "expense-edit") {
+    const x = db.expenses.find((y) => y.id === f.dataset.id); if (!x) { reset(); render(); return; }
+    const amt = num(o.amount);
+    if (!(amt > 0)) return fail(f, "Bitte einen Betrag größer 0 eingeben, z. B. 12,50.");
+    Object.assign(x, { amount: String(amt), currency: o.currency || "EUR", category: o.category || "Sonstiges", title: o.title || o.category || "Ausgabe", date: o.date || x.date, paymentMethod: o.paymentMethod || "CARD", status: o.planned ? "PLANNED" : "PAID" });
+    save(); reset(); render(); return;
   }
   if (kind === "pay") {
     const amt = num(o.amount);
@@ -2837,10 +2963,11 @@ $app.addEventListener("change", (e) => {
     const box = document.querySelector(`[data-own-box="${sel.id}"]`);
     if (box) { box.hidden = sel.value !== OWN; if (!box.hidden) box.querySelector("input")?.focus(); }
   }
-  if (sel.id === "e-cat") {
-    const t = document.getElementById("e-title"), cat = sel.value === OWN ? "" : sel.value;
+  if (sel.id === "e-cat" || sel.id === "ee-cat") {
+    const tid = sel.id === "e-cat" ? "e-title" : "ee-title";
+    const t = document.getElementById(tid), cat = sel.value === OWN ? "" : sel.value;
     t.innerHTML = choiceOpts("expTitle:" + cat, pairs(expBase(cat)), "", "– bitte wählen –");
-    const tb = document.querySelector('[data-own-box="e-title"]'); if (tb) { tb.hidden = true; tb.querySelector("input").value = ""; }
+    const tb = document.querySelector(`[data-own-box="${tid}"]`); if (tb) { tb.hidden = true; tb.querySelector("input").value = ""; }
   }
 });
 function pkCount() {
@@ -2865,8 +2992,8 @@ $app.addEventListener("change", (e) => {
   if (e.target.name === "mapapp") { mapApp = e.target.value; try { localStorage.setItem(KEY + ".karten", mapApp); } catch {} toast(mapApp === "google" ? "Adressen öffnen jetzt in Google Maps" : "Adressen öffnen jetzt in Apple Karten"); return; }
   if (e.target.id !== "bk-file" || !e.target.files?.[0]) return;
   const fr = new FileReader();
-  fr.onload = () => { const msg = importBackup(String(fr.result)); render(); const el = document.getElementById("bk-note"); if (el) el.textContent = msg; };
-  fr.onerror = () => { const el = document.getElementById("bk-note"); if (el) el.textContent = "Die Datei konnte nicht gelesen werden."; };
+  fr.onload = () => { st.bkNote = importBackup(String(fr.result)); e.target.value = ""; render(); };
+  fr.onerror = () => { st.bkNote = "Die Datei konnte nicht gelesen werden."; render(); };
   fr.readAsText(e.target.files[0]);
 });
 function updateConv() {
