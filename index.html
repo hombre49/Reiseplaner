@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v3">
+<meta name="reiseplaner-version" content="web-v5">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -439,6 +439,8 @@ function loadLocal() {
   try { d = JSON.parse(localStorage.getItem(KEY)); } catch {}
   d = d && Array.isArray(d.trips) ? d : emptyDb();
   for (const k of COLLS) d[k] ||= [];
+  const ids = new Set(d.trips.map((t) => t.id));
+  for (const k of COLLS) d[k] = d[k].filter((x) => ids.has(x.tripId)); // Reste gelöschter Reisen entfernen
   return d;
 }
 
@@ -446,11 +448,12 @@ async function boot() {
   render();
   let ns = null;
   try { ns = (await window.claude?.use?.("db")) ?? null; } catch { ns = null; }
-  if (!ns) { mode = "local"; db = loadLocal(); profile = loadLocalProfile(); render(); restoreDraft(); return; }
+  if (!ns) { mode = "local"; db = loadLocal(); profile = loadLocalProfile(); profileReady = true; render(); restoreDraft(); return; }
   store = ns;
   store.doc("profile/emergency").onSnapshot((snap) => {
     if ((pending.get("__profile") || 0) > 0) return;
     profile = snap.exists ? JSON.parse(JSON.stringify(snap.data())) : { persons: [] };
+    profileReady = true;
     if (mode !== "loading" && !busy()) render();
   }, () => {});
   const timer = setTimeout(() => { if (mode === "loading") { loadNote = "Deine Reisen sind gerade nicht erreichbar. Bitte Internetverbindung prüfen; die Seite versucht es weiter."; render(); } }, 10000);
@@ -469,7 +472,7 @@ async function boot() {
     if (first) { render(); restoreDraft(); } else if (!busy()) render();
   }, (e) => {
     clearTimeout(timer);
-    if (mode === "loading") { mode = "local"; db = loadLocal(); profile = loadLocalProfile(); loadNote = "Die Ablage in deinem Konto ist nicht erreichbar. Änderungen werden vorerst nur in diesem Browser gespeichert."; render(); restoreDraft(); return; }
+    if (mode === "loading") { mode = "local"; db = loadLocal(); profile = loadLocalProfile(); profileReady = true; loadNote = "Die Ablage in deinem Konto ist nicht erreichbar. Änderungen werden vorerst nur in diesem Browser gespeichert."; render(); restoreDraft(); return; }
     syncState = "error"; syncMsg = "Die Verbindung zur Ablage ist abgebrochen. Bitte die Seite neu laden."; showSync();
   });
 }
@@ -513,6 +516,11 @@ const addDays = (s, n) => { const d = D(s); d.setDate(d.getDate() + n); return d
 const trip = () => db.trips.find((t) => t.id === st.tripId);
 const of = (kind) => db[kind].filter((x) => x.tripId === st.tripId);
 /* Übliche Packstücke – identisch zu src/lib/packingSuggestions.ts */
+function suggestAll() {
+  const out = {}; for (const [c, l] of Object.entries(SUGGEST)) out[c] = [...l];
+  for (const [k, arr] of Object.entries(profile.lists || {})) if (k.startsWith("packItem:")) { const c = k.slice(9); const l = (out[c] ||= []); for (const n of arr) if (!l.some((x) => x.toLowerCase() === n.toLowerCase())) l.push(n); }
+  return out;
+}
 const SUGGEST = {
   Dokumente: ["Personalausweis", "Reisepass", "Führerschein", "Krankenversicherungskarte", "Auslandskrankenversicherung", "Tickets / Bordkarten", "Buchungsbestätigungen", "Bargeld", "EC-/Kreditkarte", "Impfpass"],
   Kleidung: ["T-Shirts", "Hemden / Blusen", "Hosen", "Unterwäsche", "Socken", "Pullover", "Jacke", "Regenjacke", "Schlafanzug", "Badesachen", "Bequeme Schuhe", "Sandalen", "Sonnenhut / Mütze"],
@@ -522,6 +530,63 @@ const SUGGEST = {
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
+const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
+const PAYS = { CARD: "Karte", CASH: "bar" };
+const pmLabel = (v) => PAYS[v] || v || "Karte";
+const PLACE_CATS = ["Sehenswürdigkeit", "Tempel", "Museum", "Restaurant", "Café", "Bar", "Markt", "Einkaufen", "Park", "Strand", "Aussichtspunkt"];
+const EXC_TYPES = ["Stadtführung", "Bootstour", "Tempeltour", "Tagesausflug", "Kochkurs", "Show", "Massage/Spa", "Schnorcheln/Tauchen"];
+const PACK_CATS = ["Kleidung", "Hygiene", "Dokumente", "Elektronik", "Medikamente", "Sonstiges"];
+/* Eigene Einträge: dauerhaft (profile.lists, für alle Reisen) oder nur für eine Reise (trip.lists) */
+const OWN = "__own";
+const LIST_NAMES = { transportType: "Verkehr – Art", payment: "Zahlart", placeCat: "Orte – Kategorie", excType: "Ausflüge – Art", expCat: "Ausgaben – Kategorie", packCat: "Packliste – Kategorie" };
+const listName = (k) => LIST_NAMES[k] || (k.startsWith("expTitle:") ? `Ausgaben – Wofür? (${k.slice(9)})` : k.startsWith("packItem:") ? `Packliste – Dinge (${k.slice(9)})` : k);
+const ownVals = (key) => [...(profile.lists?.[key] || []), ...(trip()?.lists?.[key] || [])];
+function choiceOpts(key, base, value, blank) {
+  const seen = new Set(), out = [];
+  const add = (v, l) => { if (!v || v === OWN || seen.has(v)) return; seen.add(v); out.push([v, l ?? v]); };
+  base.forEach(([v, l]) => add(v, l)); ownVals(key).forEach((v) => add(v)); if (value) add(value);
+  return (blank != null ? `<option value="">${esc(blank)}</option>` : "") + out.map(([v, l]) => `<option value="${esc(v)}" ${v === value ? "selected" : ""}>${esc(l)}</option>`).join("") + `<option value="${OWN}">+ Eigener Eintrag …</option>`;
+}
+const pairs = (a) => a.map((x) => [x, x]);
+function choice({ id, name, key, label, value, base, blank, from = "", fromVal, attrs = "", boxCls = "f" }) {
+  const sel = `<select id="${id}" name="${name}" data-own="${esc(key)}" ${from ? `data-own-from="${from}"` : ""} ${attrs}>${choiceOpts(from ? key + (fromVal ?? "") : key, base, value, blank)}</select>`;
+  const box = `<div class="own-box ${boxCls}" data-own-box="${id}" hidden><input id="${id}__own" name="${name}__own" placeholder="Eigener Eintrag" aria-label="Eigener Eintrag${label ? " – " + label : ""}"><label class="row" for="${id}__trip" style="gap:8px"><input type="checkbox" id="${id}__trip" name="${name}__trip"><span class="small">nur für diese Reise</span></label></div>`;
+  return label != null ? `<label class="f" for="${id}">${label}${sel}</label>${box}` : sel + box;
+}
+function addOwn(key, v, tripOnly) {
+  v = String(v || "").trim(); if (!v || !key) return;
+  if (tripOnly) { const t = trip(); if (!t) return; t.lists ||= {}; const a = (t.lists[key] ||= []); if (!a.includes(v)) a.push(v); return; }
+  profile.lists ||= {}; const a = (profile.lists[key] ||= []);
+  if (!a.includes(v)) { a.push(v); saveProfile(); }
+}
+const ownKey = (f, s) => s.dataset.ownFrom ? s.dataset.own + (f.querySelector("#" + s.dataset.ownFrom)?.value || "") : s.dataset.own;
+/** Eigene Einträge eines Formulars übernehmen; liefert Fehlermeldung oder null */
+function resolveOwn(f) {
+  for (const s of f.querySelectorAll("select[data-own]")) {
+    if (s.value !== OWN) continue;
+    const box = f.querySelector(`[data-own-box="${s.id}"]`), inp = box?.querySelector("input:not([type=checkbox])");
+    const v = (inp?.value || "").trim();
+    if (!v) { if (box) box.hidden = false; inp?.focus(); return "Bitte den eigenen Eintrag eintippen oder etwas aus der Liste wählen."; }
+    addOwn(ownKey(f, s), v, box.querySelector("input[type=checkbox]")?.checked);
+    if (![...s.options].some((o) => o.value === v)) s.add(new Option(v, v), s.options[s.options.length - 1]);
+    s.value = v; box.hidden = true;
+  }
+  return null;
+}
+/* Einmalige Übernahme der bisher benutzten eigenen Einträge in die dauerhafte Liste */
+let profileReady = false;
+function ensureLists() {
+  if (profile.lists || !profileReady || mode === "loading") return;
+  const L = {}, put = (k, v) => { v = String(v || "").trim(); if (v) { const a = (L[k] ||= []); if (!a.includes(v)) a.push(v); } };
+  for (const e of db.expenses) if (!e.sourceType) {
+    if (e.category && !EXP_CATS.includes(e.category)) put("expCat", e.category);
+    const base = EXP_TITLES[e.category] || [];
+    if (e.title && e.title !== e.category && !base.includes(e.title) && e.title !== "Trinkgeld") put("expTitle:" + e.category, e.title);
+  }
+  for (const i of db.packing) if (i.category && !PACK_CATS.includes(i.category)) put("packCat", i.category);
+  for (const x of db.places) if (x.category && !PLACE_CATS.includes(x.category)) put("placeCat", x.category);
+  profile.lists = L; saveProfile();
+}
 /* ---------- Ausgaben: Rechenlogik (entspricht src/lib/services/budget.ts) ---------- */
 const EXP_CATS = ["Anreise & Verkehr", "Unterkunft", "Essen & Trinken", "Eintritte & Aktivitäten", "Einkäufe", "Sonstiges"];
 /* Vorauswahl „Wofür?“ je Kategorie; eigene Einträge kommen aus den bisherigen Ausgaben dazu */
@@ -533,15 +598,7 @@ const EXP_TITLES = {
   "Einkäufe": ["Souvenirs", "Kleidung", "Apotheke", "Drogerie", "Geschenke", "Trinkgeld"],
   "Sonstiges": ["SIM-Karte/Daten", "Geldautomat-Gebühr", "Visum", "Wäscherei", "Trinkgeld"],
 };
-function expTitles(cat) {
-  const base = EXP_TITLES[cat] || [];
-  const own = [...new Set(db.expenses.filter((e) => e.category === cat && !e.sourceType && e.title && e.title !== cat).map((e) => e.title))]
-    .filter((x) => !base.includes(x)).sort((a, b) => a.localeCompare(b, "de"));
-  const list = [...base, ...own];
-  if (!list.includes("Trinkgeld")) list.push("Trinkgeld");
-  return list;
-}
-const expTitleOpts = (cat) => `<option value="">– bitte wählen –</option>${expTitles(cat).map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("")}<option value="__eigen">+ Eigener Eintrag …</option>`;
+const expBase = (cat) => { const l = [...(EXP_TITLES[cat] || [])]; if (!l.includes("Trinkgeld")) l.push("Trinkgeld"); return l; };
 /** Betrag aus Eingabe lesen: akzeptiert 1.500, 1500,50, 58.40, 1 500 € */
 const num = (v) => {
   if (typeof v === "number") return Number.isFinite(v) ? v : 0;
@@ -564,7 +621,7 @@ function ledger(t) {
   for (const a of db.accommodations) if (a.tripId === t.id && num(a.price) > 0 && !linked.has(a.id))
     virt.push({ id: "src-" + a.id, virtual: true, sourceType: "accommodations", sourceId: a.id, title: a.name, category: "Unterkunft", amount: a.price, currency: "EUR", status: "PLANNED", date: a.checkIn.slice(0, 10) });
   for (const x of db.transports) if (x.tripId === t.id && num(x.price) > 0 && !linked.has(x.id))
-    virt.push({ id: "src-" + x.id, virtual: true, sourceType: "transports", sourceId: x.id, title: x.type === "PARKING" ? `Parken: ${x.fromLocation}` : `${TYPES[x.type]} ${x.fromLocation} → ${x.toLocation}`, category: "Anreise & Verkehr", amount: x.price, currency: "EUR", status: "PLANNED", date: x.departAt.slice(0, 10) });
+    virt.push({ id: "src-" + x.id, virtual: true, sourceType: "transports", sourceId: x.id, title: x.type === "PARKING" ? `Parken: ${x.fromLocation}` : `${typeLabel(x.type)} ${x.fromLocation} → ${x.toLocation}`, category: "Anreise & Verkehr", amount: x.price, currency: "EUR", status: "PLANNED", date: x.departAt.slice(0, 10) });
   for (const x of db.parking) if (x.tripId === t.id && num(x.price) > 0 && !linked.has(x.id))
     virt.push({ id: "src-" + x.id, virtual: true, sourceType: "parking", sourceId: x.id, title: `Parken: ${x.name}`, category: "Anreise & Verkehr", amount: x.price, currency: "EUR", status: "PLANNED", date: x.startAt.slice(0, 10) });
   for (const x of db.excursions) if (x.tripId === t.id && num(x.price) > 0 && !linked.has(x.id))
@@ -646,7 +703,7 @@ const paidExp = (id) => (id ? db.expenses.find((e) => e.sourceId === id && e.sta
 function paidFields(p, id) {
   const e = paidExp(id);
   return `<label class="row" for="f-${p}paid" style="gap:8px;align-self:end;min-height:42px"><input type="checkbox" id="f-${p}paid" name="${p}paid" ${e ? "checked" : ""}><span class="small">bereits bezahlt</span></label>
-    <label class="f" for="f-${p}pm">Zahlart<select id="f-${p}pm" name="${p}pm"><option value="CARD">Karte</option><option value="CASH" ${e?.paymentMethod === "CASH" ? "selected" : ""}>bar</option></select></label>`;
+    ${choice({ id: `f-${p}pm`, name: `${p}pm`, key: "payment", label: "Zahlart", value: e?.paymentMethod || "CARD", base: Object.entries(PAYS) })}`;
 }
 /** Häkchen „bereits bezahlt“ in eine verknüpfte Ausgabe übersetzen (oder sie entfernen) */
 function syncPaid(sourceType, x, paid, pm, oldPrice, title, category) {
@@ -657,13 +714,13 @@ function syncPaid(sourceType, x, paid, pm, oldPrice, title, category) {
     else db.expenses.push({ id: uid(), tripId: x.tripId, date: new Date().toLocaleDateString("sv-SE"), title, category, amount: String(amt), currency: "EUR", status: "PAID", paymentMethod: pm || "CARD", sourceType, sourceId: x.id, notes: "" });
   } else if (!paid && ex) db.expenses = db.expenses.filter((e) => e !== ex);
 }
-const transTitle = (x) => (x.type === "PARKING" ? `Parken: ${x.fromLocation}` : `${TYPES[x.type]} ${x.fromLocation} → ${x.toLocation}`);
+const transTitle = (x) => (x.type === "PARKING" ? `Parken: ${x.fromLocation}` : `${typeLabel(x.type)} ${x.fromLocation} → ${x.toLocation}`);
 
 /** Felder einer Teilstrecke; p = Präfix wie "o0_" oder "r1_", h = graue Vorschläge */
 function segFields(p, v, h = {}, req) {
   const dep = splitDT(v.departAt), arr = splitDT(v.arriveAt);
   return `
-    <label class="f" for="f-${p}type">Art<select id="f-${p}type" name="${p}type">${Object.entries(TYPES).map(([k, l]) => `<option value="${k}" ${(v.type || h.type || "FLIGHT") === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+    ${choice({ id: `f-${p}type`, name: `${p}type`, key: "transportType", label: "Art", value: v.type || h.type || "FLIGHT", base: Object.entries(TYPES) })}
     <label class="f" for="f-${p}carrier">Anbieter<input id="f-${p}carrier" name="${p}carrier" value="${esc(v.carrier)}" placeholder="${esc(h.carrier || "z. B. DB, Lufthansa")}"></label>
     <label class="f" for="f-${p}number">Nummer (Flug/Zug)<input id="f-${p}number" name="${p}number" value="${esc(v.number)}"></label>
     <label class="f" for="f-${p}bookingRef">Buchungscode<input id="f-${p}bookingRef" name="${p}bookingRef" value="${esc(v.bookingRef)}" placeholder="${esc(h.bookingRef || "")}"></label>
@@ -911,7 +968,8 @@ function saveStays(f) {
 function excursionForm(x) {
   const v = x || {};
   return `<form class="panel grid2" data-form="excursions">
-    <label class="f full" for="x-title">Was? *<input id="x-title" name="title" value="${esc(v.title)}" placeholder="z. B. Stadtführung, Bootstour"></label>
+    ${choice({ id: "x-kind", name: "kind", key: "excType", label: "Art", value: v.kind || "", base: pairs(EXC_TYPES), blank: "– bitte wählen –" })}
+    <label class="f" for="x-title">Bezeichnung<input id="x-title" name="title" value="${esc(v.title && v.title !== v.kind ? v.title : "")}" placeholder="z. B. Grand Palace + Wat Arun"></label>
     <label class="f" for="x-provider">Anbieter<input id="x-provider" name="provider" value="${esc(v.provider)}"></label>
     <label class="f" for="x-meet">Treffpunkt<input id="x-meet" name="meetingPoint" value="${esc(v.meetingPoint)}"></label>
     ${gmBtn("", "x-meet", "📍 Treffpunkt aus Google Maps")}
@@ -931,14 +989,14 @@ function excursionForm(x) {
 }
 function saveExcursion(f) {
   const g = (n) => (f.elements[n]?.value ?? "").trim();
-  if (!g("title")) return "Bitte angeben, was gebucht ist.";
+  if (!g("title") && !g("kind")) return "Bitte Art oder Bezeichnung angeben.";
   const d = parseDateDE(g("date"), +trip().startDate.slice(0, 4)), s1 = parseTimeDE(g("startTime")), s2 = parseTimeDE(g("endTime"));
   if (d === null) return "Datum nicht erkannt. Bitte so eingeben: 15.04.2027 oder 15.4.";
   if (!d) return "Bitte das Datum angeben.";
   if (s1 === null || s2 === null) return "Uhrzeit nicht erkannt. Bitte so eingeben: 9:30 oder 930.";
   if (s1 && s2 && s2 < s1) return "Das Ende liegt vor dem Beginn.";
   const url = g("url"), pr = g("price");
-  const data = { title: g("title"), provider: g("provider"), meetingPoint: g("meetingPoint"), date: d, startTime: s1, endTime: s2, bookingRef: g("bookingRef"), persons: g("persons"), price: pr ? String(num(pr)) : "", phone: g("phone"), url: url && !/^https?:\/\//i.test(url) ? "https://" + url : url, notes: g("notes") };
+  const data = { kind: g("kind"), title: g("title") || g("kind"), provider: g("provider"), meetingPoint: g("meetingPoint"), date: d, startTime: s1, endTime: s2, bookingRef: g("bookingRef"), persons: g("persons"), price: pr ? String(num(pr)) : "", phone: g("phone"), url: url && !/^https?:\/\//i.test(url) ? "https://" + url : url, notes: g("notes") };
   let x = st.editing !== "new" ? db.excursions.find((e) => e.id === st.editing) : null;
   const oldPrice = x?.price;
   if (x) Object.assign(x, data); else { x = { id: uid(), tripId: st.tripId, ...data }; db.excursions.push(x); }
@@ -1346,8 +1404,13 @@ function importBackup(text) {
   }
   let prof = "";
   if (d.profile?.persons?.length) {
-    if (!profile.persons?.length) { profile = d.profile; saveProfile(); prof = " Notfalldaten übernommen."; }
+    if (!profile.persons?.length) { profile = { ...profile, persons: d.profile.persons }; saveProfile(); prof = " Notfalldaten übernommen."; }
     else prof = " Vorhandene Notfalldaten wurden nicht überschrieben.";
+  }
+  if (d.profile?.lists && typeof d.profile.lists === "object") {
+    profile.lists ||= {}; let n = 0;
+    for (const [k, arr] of Object.entries(d.profile.lists)) if (Array.isArray(arr)) for (const v of arr) { const a = (profile.lists[k] ||= []); if (typeof v === "string" && !a.includes(v)) { a.push(v); n++; } }
+    if (n) { saveProfile(); prof += ` ${n} eigene Auswahl-${n === 1 ? "Eintrag" : "Einträge"} übernommen.`; }
   }
   save();
   return `${added} ${added === 1 ? "Reise" : "Reisen"} übernommen${skipped ? `, ${skipped} schon vorhanden und unverändert gelassen` : ""}.${prof}`;
@@ -1365,7 +1428,7 @@ function autoItems() {
       if (arr.d) out.push({ type: "PARKING", date: arr.d, start: arr.t, end: "", icon: "🅿", title: `Ausfahrt: ${x.fromLocation}`, sub: "", src: "transports" });
       continue;
     }
-    const what = [TYPES[x.type], x.carrier, x.number].filter(Boolean).join(" ");
+    const what = [typeLabel(x.type), x.carrier, x.number].filter(Boolean).join(" ");
     out.push({ type: x.type, date: dep.d, start: dep.t, end: arr.d && same ? arr.t : "", icon: TYPE_ICON[x.type], title: `${x.fromLocation} → ${x.toLocation}`, sub: what + (arr.d && !same ? ` · Ankunft ${dtShort(x.arriveAt)}` : ""), src: "transports" });
     if (arr.d && !same) out.push({ type: x.type, arrival: true, date: arr.d, start: arr.t, end: "", icon: TYPE_ICON[x.type], title: `Ankunft in ${x.toLocation}`, sub: what, src: "transports" });
   }
@@ -1480,7 +1543,7 @@ const FIELDS = {
     { n: "notes", l: "Notizen", t: "textarea", full: 1 },
   ],
   places: [
-    { n: "name", l: "Name", req: 1 }, { n: "category", l: "Kategorie (Museum, Restaurant …)" },
+    { n: "name", l: "Name", req: 1 }, { n: "category", l: "Kategorie", t: "choice", key: "placeCat", base: () => pairs(PLACE_CATS), blank: "– bitte wählen –" },
     { n: "address", l: "Adresse", full: 1 }, { n: "url", l: "Website", t: "url", full: 1 },
     { n: "notes", l: "Notizen", t: "textarea", full: 1 },
   ],
@@ -1496,6 +1559,7 @@ function fieldsHtml(kind, v = {}) {
   return FIELDS[kind].map((f) => {
     const id = `f-${kind}-${f.n}`;
     if (f.t === "datetime-local") { const d = splitDT(v[f.n]); return dtField(`${id}-d`, `${f.n}__d`, `${f.l} Datum`, d.d, "date", f.req) + dtField(`${id}-t`, `${f.n}__t`, `${f.l} Uhrzeit`, d.t, "time"); }
+    if (f.t === "choice") return choice({ id, name: f.n, key: f.key, label: f.l, value: v[f.n] || "", base: f.base(), blank: f.blank });
     const val = esc(v[f.n] ?? "");
     let ctl;
     if (f.t === "select") ctl = `<select id="${id}" name="${f.n}">${f.opts.map(([k, l]) => `<option value="${k}" ${v[f.n] === k ? "selected" : ""}>${l}</option>`).join("")}</select>`;
@@ -1515,6 +1579,7 @@ function validate(kind, o) {
 
 /* ---------- Ansichten ---------- */
 function render() {
+  if (mode !== "loading") ensureLists();
   if (mode === "loading") { $app.innerHTML = `<p class="empty">Deine Reisen werden geladen …</p>${loadNote ? `<p class="err" style="margin-top:10px">${esc(loadNote)}</p>` : ""}`; showSync(); return; }
   $app.innerHTML = (loadNote ? `<p class="banner small" style="margin-bottom:14px">${esc(loadNote)}</p>` : "") + (st.tripForm ? viewTripForm() : st.emGlobal ? `<div class="stack" style="gap:14px"><button class="link" data-act="em-close" style="align-self:flex-start;padding:0">← Alle Reisen</button>${viewEmergency(null)}</div>` : st.tripId ? viewTrip() : viewTrips());
   $app.querySelectorAll("form [data-leg]").forEach(renumberSegs);
@@ -1548,6 +1613,9 @@ function viewTrips() {
       <span class="small muted">Alle Reisen und Notfalldaten als eine Datei sichern oder eine Sicherung wieder einspielen. Beim Einspielen wird nichts überschrieben, es kommen nur fehlende Reisen dazu.</span>
       <div class="row"><button class="ghost" data-act="backup-save">Sicherung speichern</button><label class="btn ghost-btn" for="bk-file">Sicherung laden<input type="file" id="bk-file" accept=".json,application/json" hidden></label></div>
       <p class="hint" id="bk-note" aria-live="polite"></p></div>
+    ${(() => { const L = Object.entries(profile.lists || {}).filter(([, a]) => a?.length); return `<details class="panel"><summary><b>Eigene Auswahl-Einträge</b> <span class="muted small">${L.reduce((n, [, a]) => n + a.length, 0)} dauerhaft gespeichert · hier entfernen</span></summary>
+      <div class="stack" style="gap:10px;margin-top:10px">${L.length ? L.sort((a, b) => listName(a[0]).localeCompare(listName(b[0]), "de")).map(([k, a]) => `<div class="stack" style="gap:4px"><span class="eyebrow">${esc(listName(k))}</span><div class="row" style="gap:6px;flex-wrap:wrap">${a.map((v) => `<span class="chip" style="text-transform:none;letter-spacing:0">${esc(v)} <button type="button" class="link" data-act="own-del" data-key="${esc(k)}" data-v="${esc(v)}" aria-label="${esc(v)} entfernen">×</button></span>`).join("")}</div></div>`).join("") : `<span class="small muted">Noch keine. Eigene Einträge entstehen über „+ Eigener Eintrag …“ in den Auswahllisten.</span>`}
+      <span class="hint">Entfernen ändert keine gespeicherten Einträge, der Wert verschwindet nur aus der Auswahl.</span></div></details>`; })()}
     <div class="panel row" style="gap:10px"><span class="eyebrow">Adressen öffnen in</span>
       <label class="row" for="map-google" style="gap:6px"><input type="radio" id="map-google" name="mapapp" value="google" ${mapApp === "google" ? "checked" : ""}>Google Maps</label>
       <label class="row" for="map-apple" style="gap:6px"><input type="radio" id="map-apple" name="mapapp" value="apple" ${mapApp === "apple" ? "checked" : ""}>Apple Karten</label></div>
@@ -1577,8 +1645,8 @@ function viewTripForm() {
 function viewTrip() {
   const t = trip();
   if (!t) { st.tripId = null; return viewTrips(); }
-  const tabs = [["overview", "Übersicht"], ["transports", "Verkehr"], ["accommodations", "Unterkünfte"], ["places", "Orte"], ["excursions", "Ausflüge"], ["itinerary", "Tagesplan"], ["expenses", "Ausgaben"], ["packing", "Packliste"], ["export", "Ausgabe"], ["emergency", "EMERGENCY"]];
-  const body = { overview: viewOverview, itinerary: viewItinerary, expenses: viewExpenses, packing: viewPacking, export: viewExport, emergency: () => viewEmergency(trip()) }[st.tab] || (() => viewList(st.tab));
+  const tabs = [["overview", "Übersicht"], ["transports", "Verkehr"], ["accommodations", "Unterkünfte"], ["places", "Orte"], ["excursions", "Ausflüge"], ["itinerary", "Tagesplan"], ["expenses", "Ausgaben"], ["packing", "Packliste"], ["export", "Ausgabe"], ["emergency", "EMERGENCY"], ["hints", "Hinweise"]];
+  const body = { overview: viewOverview, itinerary: viewItinerary, expenses: viewExpenses, packing: viewPacking, export: viewExport, emergency: () => viewEmergency(trip()), hints: viewHints }[st.tab] || (() => viewList(st.tab));
   return `<div class="hero" style="background:${esc(t.coverColor)}">
       <button class="back" data-act="home">← Alle Reisen</button>
       <div class="row between" style="align-items:flex-end"><div><h1>${esc(t.title)}</h1><div class="sub">${esc(t.destination)} · ${fDate(t.startDate)} – ${fDate(t.endDate)}</div></div>
@@ -1631,7 +1699,7 @@ function viewList(kind) {
         <span class="meta">${[x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.number && `Kennzeichen ${esc(x.number)}`, num(x.price) && fMoney(num(x.price))].filter(Boolean).join(" · ")}</span>
         ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}</div>${actions(kind, x.id)}</div>`;
     if (kind === "transports") return `<div class="ticket"><div class="main">
-        <div class="row">${paired ? `<span class="chip leg">${legLabel(x)}</span>` : ""}<span class="chip">${TYPE_ICON[x.type]} ${TYPES[x.type]}</span><span class="small muted">${esc([x.carrier, x.number].filter(Boolean).join(" · "))}</span></div>
+        <div class="row">${paired ? `<span class="chip leg">${legLabel(x)}</span>` : ""}<span class="chip">${TYPE_ICON[x.type] || "•"} ${esc(typeLabel(x.type))}</span><span class="small muted">${esc([x.carrier, x.number].filter(Boolean).join(" · "))}</span></div>
         <div class="route"><div><div class="t">${tm(x.departAt)}</div><div class="p">${esc(x.fromLocation)}</div><div class="meta">${fShort(x.departAt)}</div></div>
         <span class="arrow">→</span>
         <div class="to"><div class="t">${tm(x.arriveAt)}</div><div class="p">${esc(x.toLocation)}</div><div class="meta">${x.arriveAt ? fShort(x.arriveAt) : ""}</div></div></div>
@@ -1641,7 +1709,7 @@ function viewList(kind) {
         <span class="small">${dtShort(x.checkIn)} – ${dtShort(x.checkOut)} · ${(() => { const n = Math.max(1, Math.round((D(x.checkOut.slice(0, 10)) - D(x.checkIn.slice(0, 10))) / 864e5)); return n === 1 ? "1 Nacht" : n + " Nächte"; })()}</span>
         <span class="meta">${[x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.phone && `Tel. ${esc(x.phone)}`, num(x.price) && fMoney(num(x.price))].filter(Boolean).join(" · ")}</span>
         ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}${x.url ? `<a class="small" href="${esc(x.url)}" target="_blank" rel="noreferrer">Website öffnen</a>` : ""}</div>${actions(kind, x.id)}</div>`;
-    if (kind === "excursions") return `<div class="item"><div class="body"><div class="row" style="gap:8px"><span class="chip">${fShort(x.date)}${x.startTime ? ", " + x.startTime + (x.endTime ? "–" + x.endTime : "") : ""}</span><b>${esc(x.title)}</b></div>
+    if (kind === "excursions") return `<div class="item"><div class="body"><div class="row" style="gap:8px"><span class="chip">${fShort(x.date)}${x.startTime ? ", " + x.startTime + (x.endTime ? "–" + x.endTime : "") : ""}</span><b>${esc(x.title)}</b>${x.kind && x.kind !== x.title ? `<span class="chip">${esc(x.kind)}</span>` : ""}</div>
         ${x.meetingPoint ? `<span class="small muted">Treffpunkt: ${mapLink(x.meetingPoint)}</span>` : ""}
         <span class="meta">${[esc(x.provider || ""), x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.persons && `${esc(x.persons)} Pers.`, x.phone && `Tel. ${esc(x.phone)}`, num(x.price) && fMoney(num(x.price))].filter(Boolean).join(" · ")}</span>
         ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}${x.url ? `<a class="small" href="${esc(x.url)}" target="_blank" rel="noreferrer">Website öffnen</a>` : ""}</div>${actions(kind, x.id)}</div>`;
@@ -1713,16 +1781,33 @@ function viewItinerary() {
     ${all.length < 366 ? `<button class="ghost" data-act="add-trip-day" style="align-self:flex-start">+ Weiteren Tag anhängen (Tag ${all.length + 1})</button>` : ""}</div>`;
 }
 
+/* übliche Spanne: Fremdwährung je 1 EUR (bewusst großzügig) */
+const FX_RANGE = { THB: [25, 60], USD: [0.7, 1.6], GBP: [0.6, 1.1], CHF: [0.7, 1.4], JPY: [100, 260], CNY: [5, 11], AUD: [1.2, 2.3], CAD: [1.1, 2], NZD: [1.3, 2.5], SGD: [1.1, 2], HKD: [6, 12], INR: [60, 140], IDR: [12000, 26000], VND: [20000, 36000], PHP: [45, 85], MYR: [3.5, 6.5], KRW: [1100, 1900], TWD: [25, 45], AED: [3, 5], ZAR: [14, 28], MXN: [15, 30], BRL: [4, 8.5], PLN: [3.8, 5], CZK: [22, 28], HUF: [330, 460], SEK: [9, 13], NOK: [9, 13.5], DKK: [7.2, 7.7], ISK: [130, 170], TRY: [5, 120], EGP: [15, 100], MAD: [9, 13], TND: [2.8, 4], LKR: [250, 450], KHR: [3500, 5000], LAK: [15000, 32000], MMK: [1800, 5000], NPR: [100, 190], RON: [4.5, 5.5], BGN: [1.9, 2], HRK: [7, 8], RSD: [110, 125], ILS: [3.4, 5], QAR: [3.3, 5], SAR: [3.4, 5], OMR: [0.35, 0.55], JOD: [0.65, 1.1], KES: [100, 200], TZS: [2000, 3500] };
+const fxProbe = (fc, r) => (fc && num(r) > 0 ? `Probe: 100 € ≈ ${Math.round(100 * num(r)).toLocaleString("de-DE")} ${fc}` : "");
+function viewHints() {
+  const H = [
+    ["„+ Eigener Eintrag …“ in Auswahllisten", "Der Eintrag bleibt dauerhaft in der Liste, auch für spätere Reisen. Mit dem Haken „nur für diese Reise“ gilt er nur hier. Entfernen: Startseite → „Eigene Auswahl-Einträge“ → ×."],
+    ["„bereits bezahlt“", "Bei Verkehr, Unterkünften und Ausflügen wird der Preis damit automatisch als bezahlte Ausgabe gebucht. Ohne Haken erscheint er unter „Noch zu bezahlen“."],
+    ["📍 Aus Google Maps einfügen", "In Google Maps den Ort öffnen → Teilen → Kopieren, dann hier 📍 tippen. Kommt nur ein Link an: in Google Maps auf die Adresse tippen (wird kopiert) und erneut einfügen."],
+    ["Kurs der Fremdwährung", "Mit Komma eingeben, z. B. 37,05. Die Probe darunter („100 € ≈ …“) zeigt, ob er stimmt."],
+    ["🏠 Zeit zu Hause", "Erscheint nur, wenn bei der Reise eine Zeitverschiebung eingestellt ist (Reise → Bearbeiten)."],
+    ["Packliste, eigene Dinge", "Sie stehen künftig auch unter „Aus üblichen Dingen auswählen“, außer mit dem Haken „nur für diese Reise“."],
+    ["Ausgabe", "„Zeitraum“ leer lassen = alles. „Ausgaben nur bezahlt“ blendet Offenes aus."],
+    ["Daten und Sicherung", (mode === "cloud" ? "Die Daten liegen in deinem Claude-Konto." : "Die Daten liegen nur auf diesem Gerät.") + " „Sicherung laden“ überschreibt nichts, es kommen nur fehlende Reisen dazu."],
+  ];
+  return `<div class="stack" style="gap:12px"><h2>Hinweise</h2><div class="panel stack" style="gap:14px">${H.map(([h, t]) => `<div class="stack" style="gap:2px"><b>${esc(h)}</b><span class="small" style="text-align:justify;hyphens:auto">${esc(t)}</span></div>`).join("")}</div></div>`;
+}
 function budgetForm(t, s) {
   return `<form class="panel grid2" data-form="budget">
     <span class="eyebrow full">Budget und Währung</span>
     <label class="f" for="b-total">Gesamtbudget (EUR)<input id="b-total" name="budgetTotal" inputmode="decimal" value="${s.total ? fNum(s.total) : ""}" placeholder="${s.catSum ? "leer = Summe der Teilbudgets" : "z. B. 1.500"}"></label>
     <span></span>
     <label class="f" for="b-fc">Fremdwährung<select id="b-fc" name="foreignCurrency">${currencyOptions(t.foreignCurrency || "")}</select></label>
-    <label class="f" for="b-fx">Kurs: 1 EUR = … (in Fremdwährung)<input id="b-fx" name="fxRate" inputmode="decimal" value="${t.fxRate ? fNum(t.fxRate) : ""}" placeholder="z. B. 0,94"></label>
+    <label class="f" for="b-fx">Kurs: 1 EUR = … (in Fremdwährung)<input id="b-fx" name="fxRate" inputmode="decimal" value="${t.fxRate ? fNum(t.fxRate) : ""}" placeholder="z. B. 37,05"><span class="hint" id="b-fxprobe" aria-live="polite">${fxProbe(t.foreignCurrency, t.fxRate)}</span></label>
     <span class="eyebrow full" style="margin-top:6px">Teilbudgets je Kategorie (freiwillig)</span>
     ${s.cats.map((c, i) => `<label class="f" for="b-c${i}">${esc(c.name)}<input id="b-c${i}" name="cb:${esc(c.name)}" inputmode="decimal" value="${c.budget ? fNum(c.budget) : ""}"></label>`).join("")}
     ${st.error ? `<p class="err full">${esc(st.error)}</p>` : ""}
+    <p class="err full" data-err hidden></p>
     <div class="row full"><button>Speichern</button><button type="button" class="ghost" data-act="budget-toggle">Abbrechen</button></div></form>`;
 }
 
@@ -1733,11 +1818,11 @@ function expenseRow(e) {
   if (st.payId === e.id) {
     act = `<form class="row full" data-form="pay" data-id="${e.id}" style="gap:8px">
       <label class="f" for="pay-amt">Bezahlt (${esc(e.currency || "EUR")})<input id="pay-amt" name="amount" inputmode="decimal" value="${fNum(e.amount)}" style="width:120px"></label>
-      <label class="f" for="pay-m">Zahlart<select id="pay-m" name="paymentMethod" style="width:auto"><option value="CARD">Karte</option><option value="CASH">bar</option></select></label>
+      ${choice({ id: "pay-m", name: "paymentMethod", key: "payment", label: "Zahlart", value: "CARD", base: Object.entries(PAYS) })}
       <button style="align-self:flex-end">Als bezahlt buchen</button><button type="button" class="link" data-act="pay-cancel" style="align-self:flex-end">Abbrechen</button>
       ${st.error ? `<p class="err full">${esc(st.error)}</p>` : ""}</form>`;
   } else {
-    const left = e.status === "PLANNED" ? `<button class="link" data-act="pay" data-id="${e.id}">✓ Bezahlt</button>` : `<span class="meta">${e.paymentMethod === "CASH" ? "bar" : "Karte"}</span>`;
+    const left = e.status === "PLANNED" ? `<button class="link" data-act="pay" data-id="${e.id}">✓ Bezahlt</button>` : `<span class="meta">${esc(pmLabel(e.paymentMethod))}</span>`;
     const right = e.virtual ? `<span class="meta">Betrag dort ändern</span>`
       : st.confirmDel === e.id ? `<span class="confirm">Löschen? <button class="danger" data-act="del-yes" data-kind="expenses" data-id="${e.id}">Ja</button><button class="link" data-act="del-no">Nein</button></span>`
       : `<button class="link" data-act="del" data-id="${e.id}">Löschen</button>`;
@@ -1779,10 +1864,10 @@ function viewExpenses() {
       <label class="f" for="e-amt">Betrag *<input id="e-amt" name="amount" inputmode="decimal" required placeholder="0,00" autocomplete="off"><span class="fieldmsg" id="e-conv" aria-live="polite"></span></label>
       <label class="f" for="e-cur">Währung<select id="e-cur" name="currency">${(fc ? [fc, "EUR"] : ["EUR"]).map((c) => `<option>${esc(c)}</option>`).join("")}</select></label>
       ${(() => { const names = s.cats.map((c) => c.name); const cur = names.includes(st.expCat) ? st.expCat : names.includes("Essen & Trinken") ? "Essen & Trinken" : names[0]; return `
-      <label class="f" for="e-cat">Kategorie<select id="e-cat" name="category">${names.map((c) => `<option value="${esc(c)}" ${c === cur ? "selected" : ""}>${esc(c)}</option>`).join("")}<option value="__neu">+ Neue Kategorie …</option></select><input id="e-catnew" name="categoryNew" placeholder="Name der neuen Kategorie" hidden style="margin-top:6px" aria-label="Neue Kategorie"></label>
-      <label class="f" for="e-title">Wofür?<select id="e-title" name="title">${expTitleOpts(cur)}</select><input id="e-titlenew" name="titleNew" placeholder="z. B. Nachtmarkt" hidden style="margin-top:6px" aria-label="Eigener Eintrag"></label>`; })()}
+      ${choice({ id: "e-cat", name: "category", key: "expCat", label: "Kategorie", value: cur, base: pairs(names) })}
+      ${choice({ id: "e-title", name: "title", key: "expTitle:", from: "e-cat", fromVal: cur, label: "Wofür?", value: "", base: pairs(expBase(cur)), blank: "– bitte wählen –" })}`; })()}
       <label class="f" for="e-date">Datum<input id="e-date" name="date" type="date" value="${today}"></label>
-      <label class="f" for="e-pm">Zahlart<select id="e-pm" name="paymentMethod"><option value="CARD">Karte</option><option value="CASH">bar</option></select></label>
+      ${choice({ id: "e-pm", name: "paymentMethod", key: "payment", label: "Zahlart", value: "CARD", base: Object.entries(PAYS) })}
       <label class="row full" for="e-plan" style="gap:8px"><input type="checkbox" id="e-plan" name="planned"><span class="small">Noch nicht bezahlt</span></label>
       ${st.error && !st.payId && !st.budgetOpen ? `<p class="err full">${esc(st.error)}</p>` : ""}
       <p class="err full" data-err hidden></p>
@@ -1806,7 +1891,7 @@ function viewPacking() {
       <div class="stack" style="gap:10px;margin-top:12px">
         <div class="row between"><span class="small" id="pk-count">0 ausgewählt</span>
           <span class="row" style="gap:6px"><button type="button" class="ghost" data-act="pk-all">Alle auswählen</button><button type="button" class="link" data-act="pk-none">Alle abwählen</button></span></div>
-        ${Object.entries(SUGGEST).map(([cat, list]) => { const has = (n) => items.some((i) => i.name.toLowerCase() === n.toLowerCase()); const free = list.filter((n) => !has(n)).length; return `<details class="pk-cat">
+        ${Object.entries(suggestAll()).map(([cat, list]) => { const has = (n) => items.some((i) => i.name.toLowerCase() === n.toLowerCase()); const free = list.filter((n) => !has(n)).length; return `<details class="pk-cat">
           <summary><label for="pkc-${esc(cat)}"><input type="checkbox" id="pkc-${esc(cat)}" data-pkcat="${esc(cat)}" ${free ? "" : "disabled"}> <b>${esc(cat)}</b></label> <span class="muted small">${free} von ${list.length} noch nicht auf der Liste</span></summary>
           <div class="pk-items">${list.map((n) => has(n) ? `<label class="pk-has"><input type="checkbox" checked disabled> ${esc(n)} <span class="muted small">schon drauf</span></label>` : `<label><input type="checkbox" data-pkitem data-cat="${esc(cat)}" value="${esc(n)}"> ${esc(n)}</label>`).join("")}</div></details>`; }).join("")}
         <div class="row"><button type="button" data-act="pk-take-sel" id="pk-take" disabled>Ausgewählte übernehmen</button></div>
@@ -1817,9 +1902,9 @@ function viewPacking() {
       <div class="row">
       <input name="name" id="p-name" required placeholder="Eigener Eintrag, z. B. Fernglas" style="flex:1;min-width:140px" aria-label="Bezeichnung">
       <input name="quantity" id="p-qty" type="number" min="1" value="1" style="width:72px" aria-label="Anzahl">
-      <select name="category" id="p-cat" style="width:auto;min-width:150px" aria-label="Kategorie">${[...new Set(["Kleidung", "Hygiene", "Dokumente", "Elektronik", "Medikamente", "Sonstiges", ...items.map((i) => i.category)])].map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}<option value="__neu">+ Neue Kategorie …</option></select>
-      <input name="categoryNew" id="p-catnew" placeholder="Name der neuen Kategorie" style="width:180px" aria-label="Neue Kategorie" hidden>
+      ${choice({ id: "p-cat", name: "category", key: "packCat", value: st.packCat && st.packCat !== OWN ? st.packCat : "Kleidung", base: pairs([...new Set([...PACK_CATS, ...items.map((i) => i.category)])]), attrs: 'style="width:auto;min-width:150px" aria-label="Kategorie"', boxCls: "" })}
       <button>Hinzufügen</button></div>
+      <label class="row" for="p-trip" style="gap:8px"><input type="checkbox" id="p-trip" name="itemTrip"><span class="small">nur für diese Reise (sonst künftig auch unter „Aus üblichen Dingen auswählen“)</span></label>
       <p class="err" data-err hidden></p>${st.error ? `<p class="err">${esc(st.error)}</p>` : ""}</form>
     <div class="panel row" style="gap:8px">
       <label class="f" for="pk-src" style="flex:1;min-width:200px">Liste übernehmen (nur Fehlendes kommt dazu)
@@ -1862,7 +1947,7 @@ function buildReport(t, o) {
     const ev = [];
     for (const x of of("transports")) {
       if (x.type === "PARKING") { ev.push({ at: x.departAt, what: `Parken, Einfahrt: ${x.fromLocation}`, more: x.bookingRef || "" }); if (x.arriveAt) ev.push({ at: x.arriveAt, what: `Parken, Ausfahrt: ${x.fromLocation}`, more: "" }); continue; }
-      ev.push({ at: x.departAt, what: `${TYPES[x.type]}${x.journeyId && journeyOf(x.id).length > 1 ? ` (${legLabel(x)})` : ""}: ${x.fromLocation} → ${x.toLocation}`, more: [x.carrier, x.number].filter(Boolean).join(" ") });
+      ev.push({ at: x.departAt, what: `${typeLabel(x.type)}${x.journeyId && journeyOf(x.id).length > 1 ? ` (${legLabel(x)})` : ""}: ${x.fromLocation} → ${x.toLocation}`, more: [x.carrier, x.number].filter(Boolean).join(" ") });
     }
     for (const x of of("parking")) { ev.push({ at: x.startAt, what: `Parken, Einfahrt: ${x.name}`, more: x.bookingRef || "" }); ev.push({ at: x.endAt, what: `Parken, Ausfahrt: ${x.name}`, more: "" }); }
     for (const x of of("excursions")) ev.push({ at: x.date + (x.startTime ? "T" + x.startTime : ""), what: `Ausflug: ${x.title}`, more: x.meetingPoint ? "Treffpunkt: " + x.meetingPoint : "" });
@@ -1887,8 +1972,8 @@ function buildReport(t, o) {
     const rows = [], data = [];
     for (const g of groups) for (const x of g) {
       const label = journeyOf(x.id).length > 1 ? legLabel(x) : "";
-      rows.push([`${label ? label + "\n" : ""}${TYPES[x.type]} ${[x.carrier, x.number].filter(Boolean).join(" ")}`.trim(), withNote(x.type === "PARKING" ? [x.fromLocation, x.toLocation !== x.fromLocation && x.toLocation, x.number && "Kennzeichen " + x.number].filter(Boolean).join("\n") : `${x.fromLocation} → ${x.toLocation}`, x.notes, o), dtShort(x.departAt), x.arriveAt ? dtShort(x.arriveAt) : "–", [x.bookingRef, x.seat && "Sitz " + x.seat].filter(Boolean).join("\n"), num(x.price) ? { eur: num(x.price) } : ""]);
-      data.push([label || "Fahrt", TYPES[x.type], x.carrier || "", x.number || "", x.fromLocation, x.toLocation, deD(x.departAt), tOf(x.departAt), deD(x.arriveAt), tOf(x.arriveAt), x.bookingRef || "", x.seat || "", num(x.price) || null, ...(o.notes ? [x.notes || ""] : [])]);
+      rows.push([`${label ? label + "\n" : ""}${typeLabel(x.type)} ${[x.carrier, x.number].filter(Boolean).join(" ")}`.trim(), withNote(x.type === "PARKING" ? [x.fromLocation, x.toLocation !== x.fromLocation && x.toLocation, x.number && "Kennzeichen " + x.number].filter(Boolean).join("\n") : `${x.fromLocation} → ${x.toLocation}`, x.notes, o), dtShort(x.departAt), x.arriveAt ? dtShort(x.arriveAt) : "–", [x.bookingRef, x.seat && "Sitz " + x.seat].filter(Boolean).join("\n"), num(x.price) ? { eur: num(x.price) } : ""]);
+      data.push([label || "Fahrt", typeLabel(x.type), x.carrier || "", x.number || "", x.fromLocation, x.toLocation, deD(x.departAt), tOf(x.departAt), deD(x.arriveAt), tOf(x.arriveAt), x.bookingRef || "", x.seat || "", num(x.price) || null, ...(o.notes ? [x.notes || ""] : [])]);
     }
     const pks = of("parking").filter((x) => (!o.to || x.startAt.slice(0, 10) <= o.to) && (!o.from || x.endAt.slice(0, 10) >= o.from)).sort((a, b) => a.startAt.localeCompare(b.startAt));
     const tBlocks = rows.length ? [{ t: "table", cols: [{ h: "Fahrt", w: 20 }, { h: "Strecke", w: 28 }, { h: "Abfahrt", w: 15 }, { h: "Ankunft", w: 15 }, { h: "Buchung · Sitz", w: 12 }, { h: "Preis", w: 10, r: 1 }], rows }] : [{ t: "empty", text: "Keine Fahrten im gewählten Zeitraum." }];
@@ -1958,10 +2043,10 @@ function buildReport(t, o) {
     if (cats.length) blocks.push({ t: "sub", text: "Nach Kategorie" }, { t: "table", cols: [{ h: "Kategorie", w: 34 }, { h: "Budget", w: 16, r: 1 }, { h: "Bezahlt", w: 16, r: 1 }, ...(o.paidOnly ? [] : [{ h: "Offen", w: 16, r: 1 }]), { h: "Zusammen", w: 18, r: 1 }], rows: cats.map((c) => [c.name, c.budget ? { eur: c.budget } : "–", { eur: c.paid }, ...(o.paidOnly ? [] : [{ eur: c.planned }]), { eur: c.paid + c.planned }]) });
     blocks.push({ t: "sub", text: o.paidOnly ? "Bezahlte Ausgaben" : "Alle Ausgaben" });
     blocks.push(items.length ? { t: "table", cols: [{ h: "Datum", w: 14 }, { h: "Wofür", w: 36 }, { h: "Kategorie", w: 20 }, { h: "Status", w: 14 }, { h: "Betrag", w: 16, r: 1 }],
-      rows: items.map((e) => [e.date ? isoToDe(e.date) : "", e.title + (e.currency && e.currency !== "EUR" ? `\n${fNum(e.amount)} ${e.currency}` : ""), e.category, e.status === "PAID" ? `bezahlt\n${e.paymentMethod === "CASH" ? "bar" : "Karte"}` : "offen", { eur: e.eur }]) } : { t: "empty", text: "Keine Ausgaben im gewählten Zeitraum." });
+      rows: items.map((e) => [e.date ? isoToDe(e.date) : "", e.title + (e.currency && e.currency !== "EUR" ? `\n${fNum(e.amount)} ${e.currency}` : ""), e.category, e.status === "PAID" ? `bezahlt\n${pmLabel(e.paymentMethod)}` : "offen", { eur: e.eur }]) } : { t: "empty", text: "Keine Ausgaben im gewählten Zeitraum." });
     secs.push({ key: "expenses", title: o.paidOnly ? "Kostenabrechnung" : "Ausgaben", blocks,
       data: { cols: [{ h: "Datum" }, { h: "Wofür", wch: 30 }, { h: "Kategorie", wch: 22 }, { h: "Status" }, { h: "Zahlart" }, { h: "Betrag", eur: 0 }, { h: "Währung" }, { h: "Betrag EUR", eur: 1 }, { h: "Herkunft", wch: 16 }],
-        rows: items.map((e) => [e.date ? isoToDe(e.date) : "", e.title, e.category, e.status === "PAID" ? "bezahlt" : "offen", e.status === "PAID" ? (e.paymentMethod === "CASH" ? "bar" : "Karte") : "", num(e.amount), e.currency || "EUR", Math.round(e.eur * 100) / 100, e.sourceType ? (e.sourceType === "accommodations" ? "aus Unterkünften" : "aus Verkehr") : "erfasst"]) },
+        rows: items.map((e) => [e.date ? isoToDe(e.date) : "", e.title, e.category, e.status === "PAID" ? "bezahlt" : "offen", e.status === "PAID" ? (pmLabel(e.paymentMethod)) : "", num(e.amount), e.currency || "EUR", Math.round(e.eur * 100) / 100, e.sourceType ? (e.sourceType === "accommodations" ? "aus Unterkünften" : "aus Verkehr") : "erfasst"]) },
       data2: { name: "Kategorien", cols: [{ h: "Kategorie", wch: 26 }, { h: "Budget EUR", eur: 1 }, { h: "Bezahlt EUR", eur: 1 }, { h: "Offen EUR", eur: 1 }, { h: "Zusammen EUR", eur: 1 }], rows: cats.map((c) => [c.name, c.budget || null, Math.round(c.paid * 100) / 100, Math.round(c.planned * 100) / 100, Math.round((c.paid + c.planned) * 100) / 100]) } });
   }
 
@@ -2376,7 +2461,7 @@ function makeIcs(t, o) {
   };
   let n = 0;
   if (o.parts.has("transports")) for (const x of of("transports")) if (inR(x.departAt.slice(0, 10))) { n++;
-    ev(x.id, x.departAt, x.arriveAt, x.type === "PARKING" ? `Parken: ${x.fromLocation}` : `${TYPES[x.type]} ${x.fromLocation} → ${x.toLocation}`, x.fromLocation, [[x.carrier, x.number].filter(Boolean).join(" "), x.bookingRef && "Buchung: " + x.bookingRef, x.seat && "Sitz: " + x.seat, o.notes && x.notes].filter(Boolean).join("\n")); }
+    ev(x.id, x.departAt, x.arriveAt, x.type === "PARKING" ? `Parken: ${x.fromLocation}` : `${typeLabel(x.type)} ${x.fromLocation} → ${x.toLocation}`, x.fromLocation, [[x.carrier, x.number].filter(Boolean).join(" "), x.bookingRef && "Buchung: " + x.bookingRef, x.seat && "Sitz: " + x.seat, o.notes && x.notes].filter(Boolean).join("\n")); }
   if (o.parts.has("accommodations")) for (const a of of("accommodations")) if ((!o.to || a.checkIn.slice(0, 10) <= o.to) && (!o.from || a.checkOut.slice(0, 10) >= o.from)) { n++;
     if (a.checkIn.length > 10) { ev(a.id + "-in", a.checkIn, "", `Check-in ${a.name}`, a.address, [a.bookingRef && "Buchung: " + a.bookingRef, a.phone && "Tel.: " + a.phone].filter(Boolean).join("\n")); ev(a.id + "-out", a.checkOut, "", `Check-out ${a.name}`, a.address, ""); }
     else ev(a.id, a.checkIn.slice(0, 10), a.checkOut.slice(0, 10), `Unterkunft: ${a.name}`, a.address, [a.bookingRef && "Buchung: " + a.bookingRef, a.phone && "Tel.: " + a.phone].filter(Boolean).join("\n")); }
@@ -2515,6 +2600,11 @@ $app.addEventListener("click", (e) => {
   }
   if (b.dataset.act === "seg-add") { addSeg(b.closest("[data-leg]")); onDraft(); return; }
   if (b.dataset.act === "seg-del") { const legEl = b.closest("[data-leg]"); b.closest("[data-seg]").remove(); renumberSegs(legEl); onDraft(); return; }
+  if (b.dataset.act === "own-del") {
+    const a = profile.lists?.[b.dataset.key]; if (a) { profile.lists[b.dataset.key] = a.filter((x) => x !== b.dataset.v); if (!profile.lists[b.dataset.key].length) delete profile.lists[b.dataset.key]; saveProfile(); }
+    const open = b.closest("details")?.open; render(); if (open) { const d = [...$app.querySelectorAll("details.panel")].find((x) => x.textContent.includes("Eigene Auswahl-Einträge")); if (d) d.open = true; }
+    toast(`„${b.dataset.v}“ aus der Auswahl entfernt`); return;
+  }
   if (b.dataset.act === "gm-paste") {
     const w = b.closest(".gm"); const box = w.querySelector(".gm-box");
     const open = () => { box.hidden = false; w.querySelector(".gm-msg").textContent = ""; box.querySelector("textarea").focus(); };
@@ -2559,7 +2649,7 @@ $app.addEventListener("click", (e) => {
     case "del-no": st.confirmDel = null; break;
     case "del-yes": { const ids = kind === "transports" ? new Set(journeyOf(id).map((l) => l.id)) : new Set([id]); db[kind] = db[kind].filter((x) => !ids.has(x.id)); } if (kind === "places") db.itinerary.forEach((i) => { if (i.placeId === id) i.placeId = ""; }); save(); st.confirmDel = null; break;
     case "del-trip": st.confirmDel = "trip"; break;
-    case "del-trip-yes": for (const k of ["transports", "accommodations", "places", "itinerary", "packing", "expenses"]) db[k] = db[k].filter((x) => x.tripId !== st.tripId); db.trips = db.trips.filter((t) => t.id !== st.tripId); save(); st.tripId = null; st.tripForm = null; reset(); break;
+    case "del-trip-yes": for (const k of COLLS) db[k] = db[k].filter((x) => x.tripId !== st.tripId); db.trips = db.trips.filter((t) => t.id !== st.tripId); save(); st.tripId = null; st.tripForm = null; reset(); break;
     case "sample": addSample(); save(); break;
     case "migrate-yes": { const m = migration(); if (m) { for (const t of m.fresh) { db.trips.push(t); for (const k of COLLS) db[k].push(...(m.d[k] || []).filter((x) => x.tripId === t.id)); } save(); } markMigrated(); break; }
     case "migrate-no": markMigrated(); break;
@@ -2605,8 +2695,10 @@ $app.addEventListener("change", (e) => {
 
 $app.addEventListener("submit", (e) => {
   e.preventDefault();
-  const f = e.target; const kind = f.dataset.form; const o = Object.fromEntries(new FormData(f).entries());
-  for (const k in o) o[k] = String(o[k]).trim();
+  const f = e.target; const kind = f.dataset.form;
+  const ownErr = resolveOwn(f); if (ownErr) return fail(f, ownErr);
+  const o = Object.fromEntries(new FormData(f).entries());
+  for (const k in o) { if (/__(own|trip)$/.test(k)) { delete o[k]; continue; } o[k] = String(o[k]).trim(); }
   for (const k of Object.keys(o)) if (k.endsWith("__d")) {
     const n = k.slice(0, -3), def = FIELDS[kind]?.find((x) => x.n === n) || { l: n };
     const ref = trip() ? +trip().startDate.slice(0, 4) : new Date().getFullYear();
@@ -2622,10 +2714,7 @@ $app.addEventListener("submit", (e) => {
   if (kind === "expense") {
     const amt = num(o.amount);
     if (!(amt > 0)) return fail(f, "Bitte einen Betrag größer 0 eingeben, z. B. 12,50.");
-    if (o.category === "__neu" && !o.categoryNew) return fail(f, "Bitte einen Namen für die neue Kategorie eingeben.");
-    if (o.title === "__eigen" && !o.titleNew) return fail(f, "Bitte eintragen, wofür die Ausgabe war.");
-    o.category = (o.category === "__neu" ? o.categoryNew : o.category) || "Sonstiges";
-    o.title = o.title === "__eigen" ? o.titleNew : o.title;
+    o.category = o.category || "Sonstiges";
     st.expCat = o.category;
     db.expenses.push({ id: uid(), tripId: st.tripId, date: o.date || today, title: o.title || o.category || "Ausgabe", category: o.category || "Sonstiges", amount: String(amt), currency: o.currency || "EUR", status: o.planned ? "PLANNED" : "PAID", paymentMethod: o.paymentMethod || "CARD", notes: "" });
     save(); reset(); render(); document.getElementById("e-amt")?.focus(); return;
@@ -2642,6 +2731,11 @@ $app.addEventListener("submit", (e) => {
     const t = trip(); const fc = (o.foreignCurrency || "").toUpperCase();
     if (fc && !/^[A-Z]{3}$/.test(fc)) { st.error = "Währung bitte als dreistelliges Kürzel eingeben, z. B. CHF."; render(); return; }
     if (fc && fc !== "EUR" && !(num(o.fxRate) > 0)) { st.error = `Bitte den Kurs angeben: 1 EUR = wie viel ${fc}?`; render(); return; }
+    const rg = FX_RANGE[fc], rate = num(o.fxRate);
+    if (fc && fc !== "EUR" && rg && (rate < rg[0] / 1.5 || rate > rg[1] * 1.5) && f.dataset.fxok !== String(rate)) {
+      f.dataset.fxok = String(rate);
+      return fail(f, `Stimmt der Kurs? 1 EUR = ${fNum(rate)} ${fc} – üblich sind etwa ${fNum(rg[0])} bis ${fNum(rg[1])} ${fc}. Bitte prüfen (Komma statt Punkt?). Ist der Kurs richtig, noch einmal auf „Speichern“ tippen.`);
+    }
     const cb = {};
     for (const [k, v] of Object.entries(o)) if (k.startsWith("cb:") && num(v) > 0) cb[k.slice(3)] = num(v);
     Object.assign(t, { budgetTotal: num(o.budgetTotal) || "", foreignCurrency: fc === "EUR" ? "" : fc, fxRate: fc && fc !== "EUR" ? num(o.fxRate) : "", categoryBudgets: cb });
@@ -2662,7 +2756,7 @@ $app.addEventListener("submit", (e) => {
   } else if (kind === "emergency") {
     const r = readEmergency(f);
     if (r.error) return fail(f, r.error);
-    profile = { persons: r.persons };
+    profile = { ...profile, persons: r.persons };
     if (trip()) trip().emergency = r.trip;
     saveProfile();
   } else if (kind === "itinerary") {
@@ -2672,8 +2766,9 @@ $app.addEventListener("submit", (e) => {
     db.itinerary.push({ id: uid(), tripId: st.tripId, date: f.dataset.day, title: o.title, placeId: o.placeId, notes: o.notes, startTime: s1, endTime: s2 });
   } else if (kind === "packing") {
     if (of("packing").some((i) => i.name.toLowerCase() === o.name.toLowerCase())) { st.error = `„${o.name}“ steht schon auf der Liste.`; render(); return; }
-    if (o.category === "__neu" && !o.categoryNew) return fail(f, "Bitte einen Namen für die neue Kategorie eingeben.");
-    db.packing.push({ id: uid(), tripId: st.tripId, name: o.name, category: (o.category === "__neu" ? o.categoryNew : o.category) || "Sonstiges", quantity: Math.max(1, parseInt(o.quantity, 10) || 1), packed: false });
+    const pcat = o.category || "Sonstiges"; st.packCat = pcat;
+    if (!o.itemTrip && !(SUGGEST[pcat] || []).some((n) => n.toLowerCase() === o.name.toLowerCase())) addOwn("packItem:" + pcat, o.name, false);
+    db.packing.push({ id: uid(), tripId: st.tripId, name: o.name, category: pcat, quantity: Math.max(1, parseInt(o.quantity, 10) || 1), packed: false });
   } else if (kind === "accommodations") {
     const err2 = saveStays(f);
     if (err2) return fail(f, err2);
@@ -2735,13 +2830,16 @@ function checkField(x) {
 $app.addEventListener("input", (e) => { if (e.target.tagName === "INPUT" && suggKind(e.target)) showSugg(e.target); else closeSugg(); });
 $app.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSugg(); });
 $app.addEventListener("change", (e) => {
-  if (e.target.id === "p-cat") { const n = document.getElementById("p-catnew"); n.hidden = e.target.value !== "__neu"; if (!n.hidden) n.focus(); }
-  if (e.target.id === "e-cat") {
-    const n = document.getElementById("e-catnew"), t = document.getElementById("e-title"), tn = document.getElementById("e-titlenew");
-    n.hidden = e.target.value !== "__neu"; t.innerHTML = expTitleOpts(e.target.value === "__neu" ? "" : e.target.value); tn.hidden = true; tn.value = "";
-    if (!n.hidden) n.focus();
+  const sel = e.target;
+  if (sel.matches?.("select[data-own]")) {
+    const box = document.querySelector(`[data-own-box="${sel.id}"]`);
+    if (box) { box.hidden = sel.value !== OWN; if (!box.hidden) box.querySelector("input")?.focus(); }
   }
-  if (e.target.id === "e-title") { const tn = document.getElementById("e-titlenew"); tn.hidden = e.target.value !== "__eigen"; if (!tn.hidden) tn.focus(); }
+  if (sel.id === "e-cat") {
+    const t = document.getElementById("e-title"), cat = sel.value === OWN ? "" : sel.value;
+    t.innerHTML = choiceOpts("expTitle:" + cat, pairs(expBase(cat)), "", "– bitte wählen –");
+    const tb = document.querySelector('[data-own-box="e-title"]'); if (tb) { tb.hidden = true; tb.querySelector("input").value = ""; }
+  }
 });
 function pkCount() {
   const n = $app.querySelectorAll("[data-pkitem]:checked").length;
@@ -2775,7 +2873,10 @@ function updateConv() {
   const amt = num(document.getElementById("e-amt").value), cur = document.getElementById("e-cur").value, r = num(t.fxRate);
   el.textContent = !amt || !t.foreignCurrency || !(r > 0) ? "" : cur === "EUR" ? `≈ ${Math.round(amt * r).toLocaleString("de-DE")} ${t.foreignCurrency}` : `≈ ${fMoney(amt / r)}`;
 }
-for (const evName of ["input", "change"]) $app.addEventListener(evName, (e) => { if (e.target.id === "e-amt" || e.target.id === "e-cur") updateConv(); });
+for (const evName of ["input", "change"]) $app.addEventListener(evName, (e) => {
+  if (e.target.id === "e-amt" || e.target.id === "e-cur") updateConv();
+  if (e.target.id === "b-fx" || e.target.id === "b-fc") { const el = document.getElementById("b-fxprobe"); if (el) el.textContent = fxProbe(document.getElementById("b-fc")?.value, document.getElementById("b-fx")?.value); }
+});
 for (const evName of ["input", "change"]) $app.addEventListener(evName, (e) => {
   const f = e.target.closest?.("form[data-form]");
   if (f && f.dataset.form !== "days") onDraft();

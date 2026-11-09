@@ -1,5 +1,5 @@
-// Reiseplaner – Offline-Betrieb (web-v3). Erst Netz, sonst gespeicherte Kopie.
-const C = "reiseplaner-web-v3";
+// Reiseplaner – Offline-Betrieb (web-v5). Erst Netz, sonst gespeicherte Kopie.
+const C = "reiseplaner-web-v5";
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(C).then((c) => c.addAll(["./", "./index.html", "./manifest.json", "./icon.png"]))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== C).map((k) => caches.delete(k))))); self.clients.claim(); });
 self.addEventListener("fetch", (e) => {
