@@ -1,5 +1,5 @@
-// Reiseplaner – Offline-Betrieb (web-v19). Erst Netz, sonst gespeicherte Kopie.
-const C = "reiseplaner-web-v19";
+// Reiseplaner – Offline-Betrieb (web-v20). Erst Netz, sonst gespeicherte Kopie.
+const C = "reiseplaner-web-v20";
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(C).then((c) => c.addAll(["./", "./index.html", "./manifest.json", "./icon.png"]).then(() => c.addAll(["./pdf.min.js", "./pdf.worker.min.js"]).catch(() => {})))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== C).map((k) => caches.delete(k))))); self.clients.claim(); });
 self.addEventListener("fetch", (e) => {

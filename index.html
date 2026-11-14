@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v19">
+<meta name="reiseplaner-version" content="web-v20">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -463,7 +463,7 @@ function save() {
   }
 }
 /** Formular offen oder Eingabefeld aktiv: Fremdänderungen nicht sofort neu zeichnen. */
-const busy = () => dirty || Boolean(st.editing || st.openDay || st.payId || st.expEdit || st.imp || st.tripForm || st.budgetOpen || st.emEdit) ||
+const busy = () => dirty || Boolean(st.journal || st.editing || st.openDay || st.payId || st.expEdit || st.imp || st.tripForm || st.budgetOpen || st.emEdit) ||
   (document.activeElement && $app.contains(document.activeElement) && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName));
 
 function loadLocalProfile() { try { return JSON.parse(localStorage.getItem(KEY + ".notfall")) || { persons: [] }; } catch { return { persons: [] }; } }
@@ -535,7 +535,7 @@ function addSample() {
 }
 
 /* ---------- Zustand ---------- */
-const st = { tripId: null, tab: "overview", editing: null, confirmDel: null, error: null, tripForm: null, openDay: null, payId: null, budgetOpen: false, leg: "OUT", emEdit: false, emGlobal: false, expEdit: null, imp: null };
+const st = { tripId: null, tab: "overview", editing: null, confirmDel: null, error: null, tripForm: null, openDay: null, payId: null, budgetOpen: false, leg: "OUT", emEdit: false, emGlobal: false, expEdit: null, imp: null, journal: null };
 const $app = document.getElementById("app");
 
 /* ---------- Hilfen ---------- */
@@ -563,7 +563,7 @@ const SUGGEST = {
   Elektronik: ["Handy", "Ladekabel", "Powerbank", "Reiseadapter", "Kopfhörer", "Kamera", "E-Reader"],
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
-const APP_VERSION = "web-v19";
+const APP_VERSION = "web-v20";
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
 const PAYS = { CARD: "Karte", CASH: "bar" };
@@ -1220,7 +1220,7 @@ function gmApply(w, txt) {
   return true;
 }
 /* Dokumente (Tickets, Bestätigungen) und Titelbilder: liegen als Dateien in der Browser-Datenbank dieses Geräts */
-let idb = null, docIndex = [], coverUrl = {};
+let idb = null, docIndex = [], coverUrl = {}, thumbUrl = {};
 function idbOpen() { return new Promise((res) => { try { const r = indexedDB.open("reiseplaner-dokumente", 1); r.onupgradeneeded = () => r.result.createObjectStore("docs", { keyPath: "id" }); r.onsuccess = () => res(r.result); r.onerror = r.onblocked = () => res(null); } catch { res(null); } }); }
 const idbReq = (rw, fn) => new Promise((res) => { if (!idb) return res(null); try { const tx = idb.transaction("docs", rw); const rq = fn(tx.objectStore("docs")); tx.oncomplete = () => res(rq?.result ?? true); tx.onerror = tx.onabort = () => res(null); } catch { res(null); } });
 const docMeta = ({ data, ...m }) => m;
@@ -1229,6 +1229,7 @@ async function docsInit() {
   const all = (await idbReq("readonly", (o) => o.getAll())) || [];
   docIndex = all.map(docMeta);
   for (const d of all) if (d.kind === "cover") coverUrl[d.ownerId] = URL.createObjectURL(new Blob([d.data], { type: d.type }));
+  for (const d of all) if (d.kind === "journal") thumbUrl[d.id] = URL.createObjectURL(new Blob([d.data], { type: d.type }));
   if (all.length && mode !== "loading" && !busy()) render();
 }
 const docsOf = (kind, ownerId) => docIndex.filter((d) => d.kind === kind && d.ownerId === ownerId);
@@ -1253,11 +1254,12 @@ async function docPut(kind, ownerId, file, tripId) {
   if (!(await idbReq("readwrite", (o) => o.put(rec)))) return "Die Datei konnte nicht abgelegt werden (Speicher voll?).";
   docIndex = docIndex.filter((d) => d.id !== rec.id).concat(docMeta(rec));
   if (kind === "cover") { if (coverUrl[ownerId]) URL.revokeObjectURL(coverUrl[ownerId]); coverUrl[ownerId] = URL.createObjectURL(new Blob([rec.data], { type: rec.type })); }
+  if (kind === "journal") thumbUrl[rec.id] = URL.createObjectURL(new Blob([rec.data], { type: rec.type }));
   return null;
 }
 async function docsRemove(test) {
   const gone = docIndex.filter(test); if (!gone.length) return;
-  for (const d of gone) { await idbReq("readwrite", (o) => o.delete(d.id)); if (d.kind === "cover" && coverUrl[d.ownerId]) { URL.revokeObjectURL(coverUrl[d.ownerId]); delete coverUrl[d.ownerId]; } }
+  for (const d of gone) { await idbReq("readwrite", (o) => o.delete(d.id)); if (d.kind === "cover" && coverUrl[d.ownerId]) { URL.revokeObjectURL(coverUrl[d.ownerId]); delete coverUrl[d.ownerId]; } if (thumbUrl[d.id]) { URL.revokeObjectURL(thumbUrl[d.id]); delete thumbUrl[d.id]; } }
   docIndex = docIndex.filter((d) => !gone.includes(d));
 }
 const fSize = (n) => (n >= 1e6 ? (n / 1e6).toLocaleString("de-DE", { maximumFractionDigits: 1 }) + " MB" : Math.max(1, Math.round(n / 1e3)) + " KB");
@@ -1312,6 +1314,24 @@ function meetRoute(x) {
   }
   const dest = trip()?.destination || "";
   return routeLink("", dest && !mp.toLowerCase().includes(dest.toLowerCase()) ? `${mp}, ${dest}` : mp);
+}
+/* Reisetagebuch: je Tag ein Text (in der Reise gespeichert) und Fotos (auf dem Gerät) */
+const jKey = (t, d) => `${t.id}:${d}`;
+const jPhotos = (t, d) => docsOf("journal", jKey(t, d));
+function journalBox(t, d, ctx) {
+  const txt = t.journal?.[d] || "", ph = jPhotos(t, d), open = st.journal === `${ctx}:${d}`;
+  return `<div class="stack jr" style="gap:6px"><button type="button" class="link small" style="align-self:flex-start" data-act="journal" data-id="${ctx}:${d}" aria-expanded="${open}">✎ Tagebuch${txt || ph.length ? " ●" : ""}</button>
+    ${open ? `<textarea data-journal="${d}" rows="6" aria-label="Tagebuch ${fDate(d)}" placeholder="Was war heute?">${esc(txt)}</textarea>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">${ph.map((x) => `<span style="position:relative;display:inline-block"><button type="button" data-act="doc-open" data-id="${x.id}" style="padding:0;border:0;background:none" aria-label="Foto ansehen"><img src="${thumbUrl[x.id] || ""}" alt="" style="width:86px;height:86px;object-fit:cover;border-radius:8px;display:block;pointer-events:none"></button><button type="button" class="link" data-act="doc-del" data-id="${x.id}" aria-label="Foto entfernen" style="position:absolute;top:2px;right:2px;background:rgba(0,0,0,.6);color:#fff;border-radius:8px;padding:0 6px">×</button></span>`).join("")}
+      <label class="btn ghost-btn" for="jr-${ctx}-${d}">+ Foto<input type="file" id="jr-${ctx}-${d}" accept="image/*" multiple data-journal-photo="${d}" hidden></label></div>
+      <span class="hint" data-jr-note>Der Text wird beim Tippen automatisch gespeichert. Fotos liegen nur auf diesem Gerät.</span>` : ""}</div>`;
+}
+let jrTimer = null;
+function journalInput(el) {
+  const t = trip(); if (!t) return;
+  t.journal ||= {}; const v = el.value;
+  if (v.trim()) t.journal[el.dataset.journal] = v; else delete t.journal[el.dataset.journal];
+  clearTimeout(jrTimer); jrTimer = setTimeout(() => { save(); const n = el.parentElement?.querySelector("[data-jr-note]"); if (n) n.textContent = "Gespeichert " + new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) + " Uhr. Fotos liegen nur auf diesem Gerät."; }, 500);
 }
 const webHref = (u) => (/^https?:\/\//i.test(u) ? u : "https://" + u);
 const spot = (id) => (id ? db.places.find((p) => p.id === id) || db.restaurants.find((p) => p.id === id) : undefined);
@@ -1610,7 +1630,7 @@ function applyImport(d, replaceIds, replaceProfile) {
     for (const x of d.docs) {
       if (!x?.id || !x.b64 || !db.trips.some((t) => t.id === x.tripId) || docIndex.some((y) => y.id === x.id)) continue;
       try { const bin = atob(x.b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); const { b64, ...m } = x; const rec = { ...m, data: u.buffer };
-        if (await idbReq("readwrite", (o) => o.put(rec))) { docIndex.push(docMeta(rec)); if (rec.kind === "cover") coverUrl[rec.ownerId] = URL.createObjectURL(new Blob([rec.data], { type: rec.type })); n++; } } catch {}
+        if (await idbReq("readwrite", (o) => o.put(rec))) { docIndex.push(docMeta(rec)); if (rec.kind === "cover") coverUrl[rec.ownerId] = URL.createObjectURL(new Blob([rec.data], { type: rec.type })); if (rec.kind === "journal") thumbUrl[rec.id] = URL.createObjectURL(new Blob([rec.data], { type: rec.type })); n++; } } catch {}
     }
     if (n) { st.bkNote = (st.bkNote || "") + ` ${n} ${n === 1 ? "Dokument" : "Dokumente"} übernommen.`; if (!busy()) render(); }
   })();
@@ -1922,6 +1942,7 @@ function todayPanel(t, byDay) {
     ${next ? `<div class="stack" style="gap:2px"><span class="eyebrow">Nächste Fahrt</span><b>${TYPE_ICON[next.type] || "•"} ${esc(next.type === "PARKING" ? "Parken: " + next.fromLocation : `${next.fromLocation} → ${next.toLocation}`)}</b><span class="small">${esc(dtShort(next.departAt))}${[next.carrier, next.number].filter(Boolean).length ? " · " + esc([next.carrier, next.number].filter(Boolean).join(" ")) : ""}${next.bookingRef ? " · Buchung " : ""}${next.bookingRef ? copyBtn(next.bookingRef) : ""}</span></div>` : ""}
     ${stay ? `<div class="stack" style="gap:2px"><span class="eyebrow">Unterkunft</span><b>🏨 ${esc(stay.name)}</b>${stay.address ? `<span class="small">${mapLink(stay.address)}</span>` : ""}${stay.phone ? `<span class="small">Tel. ${copyBtn(stay.phone)}</span>` : ""}${routeLink(stay.name, stay.address)}</div>` : ""}
     <div class="stack" style="gap:2px"><span class="eyebrow">Heute geplant</span>${list.length ? `<ol class="timeline" style="margin:0">${list.map((e) => `<li><span class="time">${e.notime ? "" : fTime(e.at)}${e.home ? `<span class="hometime">🏠 ${esc(e.home)}</span>` : ""}</span><span>${e.icon}</span><span><b>${esc(e.text)}</b>${e.sub ? ` <span class="muted small">${esc(e.sub)}</span>` : ""}</span></li>`).join("")}</ol>` : `<span class="small muted">Für heute ist nichts eingetragen.</span>`}</div>
+    ${journalBox(t, td, "heute")}
   </div>`;
 }
 function viewOverview() {
@@ -2050,6 +2071,7 @@ function viewItinerary() {
       ${list.length || st.openDay === d ? "" : `<span class="small muted">Noch nichts geplant.</span>`}
       ${list.map((it) => (it.own ? own(it.x, inTrip) : au(it.a, inTrip))).join("")}
       ${st.openDay === d ? form(d) : ""}
+      ${journalBox(t, d, "plan")}
     </div>`;
     }).join("")}
     ${all.length < 366 ? `<button class="ghost" data-act="add-trip-day" style="align-self:flex-start">+ Weiteren Tag anhängen (Tag ${all.length + 1})</button>` : ""}</div>`;
@@ -2070,6 +2092,7 @@ function viewHints() {
     ["🏠 Zeit zu Hause", "Erscheint nur, wenn bei der Reise eine Zeitverschiebung eingestellt ist (Reise → Bearbeiten)."],
     ["Packliste, eigene Dinge", "Sie stehen künftig auch unter „Aus üblichen Dingen auswählen“, außer mit dem Haken „nur für diese Reise“."],
     ["Ausgabe", "„Zeitraum“ leer lassen = alles. „Ausgaben nur bezahlt“ blendet Offenes aus."],
+    ["✎ Tagebuch", "Im Tagesplan und während der Reise im „Heute“-Kasten: aufklappen, schreiben, Fotos anhängen. Der Text wird automatisch gespeichert. Die Vorlage „Reisetagebuch“ unter Ausgabe macht daraus ein PDF mit Fotos."],
     ["📎 Dokumente und Titelbild", "Bei Verkehr, Unterkünften, Orten, Restaurants und Ausflügen lassen sich über „+ Dokument“ Fotos und PDFs ablegen (Ticket, Buchungsbestätigung) und offline öffnen. Sie liegen nur auf diesem Gerät. Aufs andere Gerät kommen sie mit „Sicherung mit Dokumenten“; die normale Sicherung enthält sie nicht."],
     ["🧭 Route hierher", "Bei Orten, Restaurants, Unterkünften und Ausflugs-Treffpunkten öffnet der Knopf die Karten-App mit der Route vom aktuellen Standort. Gespeichert wird dabei nichts."],
     ["Daten und Sicherung", (mode === "cloud" ? "Die Daten liegen in deinem Claude-Konto." : "Die Daten liegen nur auf diesem Gerät.") + " „Sicherung laden“ fragt bei schon vorhandenen Reisen: ersetzen oder behalten. „Letztes Laden rückgängig machen“ holt den vorherigen Stand zurück."],
@@ -2260,13 +2283,14 @@ function viewPacking() {
    Ausgabe: Bausteine wählen → ein neutrales Berichtsmodell → je Format ein Baustein
    (Vorschau, Text, PDF, Word, Excel, CSV, Kalender). Neues Format = neuer Baustein.
    ===================================================================== */
-const PARTS = [["overview", "Übersicht & Zeitleiste"], ["transports", "Verkehr"], ["accommodations", "Unterkünfte"], ["places", "Orte"], ["restaurants", "Restaurants & Bars"], ["excursions", "Ausflüge"], ["itinerary", "Tagesplan"], ["expenses", "Ausgaben"], ["packing", "Packliste"], ["emergency", "Notfallkarte (EMERGENCY)"]];
+const PARTS = [["overview", "Übersicht & Zeitleiste"], ["transports", "Verkehr"], ["accommodations", "Unterkünfte"], ["places", "Orte"], ["restaurants", "Restaurants & Bars"], ["excursions", "Ausflüge"], ["itinerary", "Tagesplan"], ["expenses", "Ausgaben"], ["packing", "Packliste"], ["journal", "Reisetagebuch"], ["emergency", "Notfallkarte (EMERGENCY)"]];
 const PRESETS = [
-  { k: "komplett", l: "Komplette Reise", parts: PARTS.map((p) => p[0]).filter((k) => k !== "emergency"), paidOnly: false, notes: true },
+  { k: "komplett", l: "Komplette Reise", parts: PARTS.map((p) => p[0]).filter((k) => k !== "emergency" && k !== "journal"), paidOnly: false, notes: true },
   { k: "notfall", l: "Notfallkarte zum Mitnehmen", parts: ["emergency"], paidOnly: false, notes: true },
   { k: "unterwegs", l: "Unterlagen für unterwegs", parts: ["transports", "accommodations", "excursions", "itinerary"], paidOnly: false, notes: true },
   { k: "packliste", l: "Packliste zum Abhaken", parts: ["packing"], paidOnly: false, notes: false },
   { k: "kosten", l: "Kostenabrechnung", parts: ["expenses"], paidOnly: true, notes: false },
+  { k: "tagebuch", l: "Reisetagebuch", parts: ["journal"], paidOnly: false, notes: true },
 ];
 const repDefaults = (t, k = "komplett") => { const p = PRESETS.find((x) => x.k === k); return { preset: k, parts: new Set(p.parts), from: "", to: "", paidOnly: p.paidOnly, notes: p.notes }; }; // leerer Zeitraum = alles, auch Anreise und Vorab-Buchungen
 
@@ -2387,6 +2411,20 @@ function buildReport(t, o) {
       data2: { name: "Kategorien", cols: [{ h: "Kategorie", wch: 26 }, { h: "Budget EUR", eur: 1 }, { h: "Bezahlt EUR", eur: 1 }, { h: "Offen EUR", eur: 1 }, { h: "Zusammen EUR", eur: 1 }], rows: cats.map((c) => [c.name, c.budget || null, Math.round(c.paid * 100) / 100, Math.round(c.planned * 100) / 100, Math.round((c.paid + c.planned) * 100) / 100]) } });
   }
 
+  if (o.parts.has("journal")) {
+    const ds = [...new Set([...Object.keys(t.journal || {}), ...docIndex.filter((x) => x.kind === "journal" && x.tripId === t.id).map((x) => x.ownerId.split(":")[1])])].filter((d) => (!o.from || d >= o.from) && (!o.to || d <= o.to)).sort();
+    const blocks = [], rows = [];
+    for (const d of ds) {
+      const txt = (t.journal?.[d] || "").trim(), ph = jPhotos(t, d); if (!txt && !ph.length) continue;
+      const n = Math.round((Date.parse(d) - Date.parse(t.startDate)) / 864e5) + 1;
+      blocks.push({ t: "sub", text: `${n >= 1 ? `Tag ${n} · ` : ""}${fDate(d)}` });
+      if (txt) blocks.push({ t: "para", text: txt });
+      if (ph.length) blocks.push({ t: "imgs", ids: ph.map((x) => x.id) });
+      rows.push([isoToDe(d), txt, ph.length || ""]);
+    }
+    secs.push({ key: "journal", title: "Reisetagebuch", blocks: blocks.length ? blocks : [{ t: "empty", text: "Noch keine Tagebuch-Einträge." }],
+      data: { name: "Tagebuch", cols: [{ h: "Datum" }, { h: "Eintrag", wch: 60 }, { h: "Fotos" }], rows } });
+  }
   if (o.parts.has("packing")) {
     const items = of("packing");
     const groups = {};
@@ -2446,6 +2484,7 @@ function reportHtml(r) {
     if (b.t === "kv") return `<div class="kv">${b.rows.map(([k, v]) => `<b>${esc(k)}</b><span>${esc(v)}</span>`).join("")}</div>`;
     if (b.t === "para") return b.text.split(/\n+/).map((x) => `<p class="just" lang="de">${esc(x)}</p>`).join("");
     if (b.t === "sub") return `<h4>${esc(b.text)}</h4>`;
+    if (b.t === "imgs") return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 12px">${b.ids.map((id) => `<img src="${thumbUrl[id] || ""}" alt="" style="width:calc(50% - 4px);max-height:260px;object-fit:contain;background:#f3f3f3">`).join("")}</div>`;
     if (b.t === "empty") return `<p class="muted small">${esc(b.text)}</p>`;
     if (b.t === "table") return `<div class="tablewrap"><table><thead><tr>${b.cols.map((c) => `<th class="${c.r ? "r" : ""}" style="width:${c.w}%">${esc(c.h)}</th>`).join("")}</tr></thead><tbody>${b.rows.map((row) => `<tr>${row.map((c, i) => `<td class="${b.cols[i].r ? "r" : ""}">${esc(cellText(c))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
     if (b.t === "check") return b.groups.map((g) => `<h4>${esc(g.title)}</h4><ul class="cl">${g.items.map((i) => `<li><span class="box">${i.done ? "✓" : ""}</span>${esc(i.text)}</li>`).join("")}</ul>`).join("");
@@ -2464,6 +2503,7 @@ function reportText(r) {
     for (const b of s.blocks) {
       if (b.t === "kv") b.rows.forEach(([k, v]) => out.push(`${k}: ${v}`));
       else if (b.t === "para" || b.t === "empty") out.push(b.text);
+      else if (b.t === "imgs") out.push(`(${b.ids.length} ${b.ids.length === 1 ? "Foto" : "Fotos"})`);
       else if (b.t === "sub") out.push("", `-- ${b.text} --`);
       else if (b.t === "table") b.rows.forEach((row) => out.push("• " + row.map((c) => cellText(c).replace(/\n/g, ", ")).filter(Boolean).join(" | ")));
       else if (b.t === "check") b.groups.forEach((g) => { out.push("", g.title + ":"); g.items.forEach((i) => out.push(`[${i.done ? "x" : " "}] ${i.text}`)); });
@@ -2558,6 +2598,7 @@ async function webPdfDoc() {
   const pages = [d.addPage([PW * MM, PH * MM])];
   let cur = 0, f = F.normal, size = 10, tc = L.rgb(0, 0, 0), dc = L.rgb(0, 0, 0), fc = L.rgb(0, 0, 0), lw = 0.2;
   const okc = new Map();
+  const imgs = {};
   const safe = (s) => [...String(s ?? "")].filter((ch) => {
     const k = f === F.normal ? "n" + ch : f === F.bold ? "b" + ch : "i" + ch;
     if (!okc.has(k)) { try { f.widthOfTextAtSize(ch, 1); okc.set(k, true); } catch { okc.set(k, false); } }
@@ -2577,6 +2618,9 @@ async function webPdfDoc() {
     addPage() { pages.push(d.addPage([PW * MM, PH * MM])); cur = pages.length - 1; },
     getNumberOfPages() { return pages.length; },
     getTextWidth(t) { return wid(t); },
+    usesKeys: true,
+    async preload(IMG) { for (const [id, im] of Object.entries(IMG || {})) { try { imgs[id] = im.fmt === "PNG" ? await d.embedPng(im.url) : await d.embedJpg(im.url); } catch {} } },
+    addImage(key, _fmt, x, y, w, h) { const im = imgs[key]; if (im) pages[cur].drawImage(im, { x: x * MM, y: (PH - y - h) * MM, width: w * MM, height: h * MM }); },
     setPage(i) { cur = i - 1; },
     splitTextToSize(text, w) {
       const out = [];
@@ -2640,8 +2684,24 @@ async function makePdf(r) {
     if (!one || res.pages <= r.sections.length || Z === 0.6) return res.buf;
   }
 }
+/** Fotos für das PDF laden: Daten, Format, Seitenverhältnis */
+async function pdfImages(r) {
+  const out = {};
+  for (const s0 of r.sections) for (const b of s0.blocks) if (b.t === "imgs") for (const id of b.ids) {
+    try {
+      const rec = await idbReq("readonly", (o) => o.get(id)); if (!rec) continue;
+      const bmp = await createImageBitmap(new Blob([rec.data], { type: rec.type })), k = Math.min(1, 1300 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement("canvas"); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(bmp, 0, 0, c.width, c.height);
+      out[id] = { url: c.toDataURL("image/jpeg", 0.8), fmt: "JPEG", w: c.width, h: c.height }; // fürs PDF verkleinert, damit die Datei handlich bleibt
+    } catch {}
+  }
+  return out;
+}
 async function renderPdf(r, Z) {
+  const IMG = await pdfImages(r);
   const doc = await webPdfDoc();
+  if (doc.preload) await doc.preload(IMG);
   const M = 18, W = 210 - 2 * M, TOP = Z < 1 ? 20 : 24, BOTTOM = 279;
   const INK = [22, 32, 29], MUTED = [93, 107, 102], ACC = [15, 92, 82], LINE = [211, 218, 215], SUNK = [230, 234, 232];
   const lh = (pt) => pt * 0.3528 * (Z < 1 ? 1.22 : 1.3);
@@ -2659,6 +2719,16 @@ async function renderPdf(r, Z) {
     font("bold", 15, ACC); doc.text(pdfSafe(s.title), M, y + 2 * Z); y += 4 * Z;
     doc.setDrawColor(...ACC); doc.setLineWidth(0.4); doc.line(M, y, M + W, y); y += 6 * Z;
     for (const b of s.blocks) {
+      if (b.t === "imgs") {
+        const list = b.ids.map((id) => [id, IMG[id]]).filter((x) => x[1]), gap = 5, cw = (W - gap) / 2, maxH = 95;
+        for (let i = 0; i < list.length; i += 2) {
+          const row = list.slice(i, i + 2).map(([id, im]) => { let w = cw, h = (cw * im.h) / im.w; if (h > maxH) { h = maxH; w = (maxH * im.w) / im.h; } return { id, im, w, h }; });
+          const rh = Math.max(...row.map((x) => x.h)); ensure(rh + 4);
+          row.forEach((x, k) => { try { doc.addImage(doc.usesKeys ? x.id : x.im.url, x.im.fmt, M + k * (cw + gap) + (cw - x.w) / 2, y, x.w, x.h); } catch {} });
+          y += rh + 4;
+        }
+        y += 2; continue;
+      }
       if (b.t === "sub") { ensure(14 * Z); y += 2 * Z; font("bold", 11, ACC); doc.text(pdfSafe(b.text), M, y); y += 5 * Z; }
       else if (b.t === "empty") { ensure(7 * Z); font("italic", 9.5, MUTED); doc.text(pdfSafe(b.text), M, y); y += 6 * Z; }
       else if (b.t === "para") {
@@ -2755,6 +2825,7 @@ function docxParts(r) {
     for (const b of s.blocks) {
       if (b.t === "sub") body += p(b.text, "Heading2");
       else if (b.t === "para") body += b.text.split(/\n+/).map((t) => p(t, null, { jc: "both" })).join("");
+      else if (b.t === "imgs") body += p(`(${b.ids.length} ${b.ids.length === 1 ? "Foto" : "Fotos"} – enthalten im PDF)`);
       else if (b.t === "empty") body += p(b.text);
       else if (b.t === "kv") body += b.rows.map(([k, v]) => `<w:p><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${x(k)}: </w:t></w:r>${runs(v)}</w:p>`).join("");
       else if (b.t === "table") body += table(b);
@@ -2934,7 +3005,7 @@ function viewExport() {
 const refreshPreview = () => { const el = document.getElementById("rep-preview"); if (el) el.innerHTML = reportHtml(buildReport(trip(), st.rep)); document.querySelectorAll('[data-act="preset"]').forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.id === st.rep.preset))); };
 
 /* ---------- Ereignisse ---------- */
-const reset = () => { st.editing = null; st.confirmDel = null; st.error = null; st.openDay = null; st.payId = null; st.expEdit = null; st.bkNote = ""; st.leg = "OUT"; st.emEdit = false; dirty = false; clearDraft(); };
+const reset = () => { st.journal = null; st.editing = null; st.confirmDel = null; st.error = null; st.openDay = null; st.payId = null; st.expEdit = null; st.bkNote = ""; st.leg = "OUT"; st.emEdit = false; dirty = false; clearDraft(); };
 
 $app.addEventListener("click", (e) => {
   if (e.target.classList?.contains("pick-native")) { try { e.target.showPicker?.(); } catch {} return; }
@@ -2983,6 +3054,7 @@ $app.addEventListener("click", (e) => {
   if (b.dataset.act === "seg-del") { const legEl = b.closest("[data-leg]"); b.closest("[data-seg]").remove(); renumberSegs(legEl); onDraft(); return; }
   if (b.dataset.act === "imp-cancel") { st.imp = null; st.bkNote = "Laden abgebrochen, nichts geändert."; render(); return; }
   if (b.dataset.act === "imp-undo") { st.bkNote = undoImport(); render(); return; }
+  if (b.dataset.act === "journal") { clearTimeout(jrTimer); if (st.journal) save(); st.journal = st.journal === b.dataset.id ? null : b.dataset.id; render(); if (st.journal) { const ta = $app.querySelector(`.jr [aria-expanded="true"]`)?.parentElement.querySelector("textarea"); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } } return; }
   if (b.dataset.act === "doc-open") { docOpen(b.dataset.id); return; }
   if (b.dataset.act === "doc-del") {
     if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "wirklich löschen?"; setTimeout(() => { if (b.isConnected) { b.dataset.sure = ""; b.textContent = "×"; } }, 4000); return; }
@@ -3096,6 +3168,12 @@ $app.addEventListener("change", (e) => {
 });
 
 $app.addEventListener("change", (e) => {
+  const jp = e.target;
+  if (jp.dataset?.journalPhoto && jp.files?.length) {
+    const t = trip(), d = jp.dataset.journalPhoto, files = [...jp.files].filter((f) => /^image\//.test(f.type));
+    (async () => { let err = null; for (const f of files) err = (await docPut("journal", jKey(t, d), f, t.id)) || err; jp.value = ""; render(); toast(err || `${files.length} ${files.length === 1 ? "Foto" : "Fotos"} abgelegt`); })();
+    return;
+  }
   const inp = e.target, file = inp.files?.[0];
   if (!file || !(inp.dataset?.docOwner || inp.id === "cover-file")) return;
   const cover = inp.id === "cover-file";
@@ -3259,7 +3337,7 @@ function checkField(x) {
   }
 }
 
-$app.addEventListener("input", (e) => { if (e.target.tagName === "INPUT" && suggKind(e.target)) showSugg(e.target); else closeSugg(); });
+$app.addEventListener("input", (e) => { if (e.target.dataset?.journal) { journalInput(e.target); return; } if (e.target.tagName === "INPUT" && suggKind(e.target)) showSugg(e.target); else closeSugg(); });
 $app.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSugg(); });
 $app.addEventListener("change", (e) => {
   const sel = e.target;
