@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v12">
+<meta name="reiseplaner-version" content="web-v15">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -365,7 +365,7 @@ function linkSample(d) {
 }
 /* ---------- Ablage: im claude.ai-Konto (db), sonst nur im Browser ----------
    Je Reise ein Dokument trips/<reiseId> mit der Reise und allen ihren Einträgen. */
-const COLLS = ["transports", "parking", "accommodations", "places", "excursions", "itinerary", "packing", "expenses"];
+const COLLS = ["transports", "parking", "accommodations", "places", "restaurants", "excursions", "itinerary", "packing", "expenses"];
 const emptyDb = () => { const d = { trips: [] }; COLLS.forEach((k) => (d[k] = [])); return d; };
 let db = emptyDb();
 let store = null;          // claude.use("db")
@@ -469,6 +469,7 @@ function loadLocal() {
 }
 
 async function boot() {
+  docsInit();
   render();
   let ns = null;
   try { ns = (await window.claude?.use?.("db")) ?? null; } catch { ns = null; }
@@ -553,21 +554,22 @@ const SUGGEST = {
   Elektronik: ["Handy", "Ladekabel", "Powerbank", "Reiseadapter", "Kopfhörer", "Kamera", "E-Reader"],
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
-const APP_VERSION = "web-v12";
+const APP_VERSION = "web-v15";
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
 const PAYS = { CARD: "Karte", CASH: "bar" };
 const pmLabel = (v) => PAYS[v] || v || "Karte";
-const PLACE_CATS = ["Sehenswürdigkeit", "Tempel", "Museum", "Restaurant", "Café", "Bar", "Markt", "Einkaufen", "Park", "Strand", "Aussichtspunkt"];
+const FOOD_CATS = ["Restaurant", "Bar", "Café", "Streetfood", "Rooftop-Bar", "Frühstück", "Bäckerei/Dessert", "Nachtmarkt"];
+const PLACE_CATS = ["Sehenswürdigkeit", "Tempel", "Museum", "Café", "Markt", "Einkaufen", "Park", "Strand", "Aussichtspunkt"];
 const EXC_TYPES = ["Stadtführung", "Bootstour", "Tempeltour", "Tagesausflug", "Kochkurs", "Show", "Massage/Spa", "Schnorcheln/Tauchen"];
 const PACK_CATS = ["Kleidung", "Hygiene", "Dokumente", "Elektronik", "Medikamente", "Sonstiges"];
 /* Eigene Einträge: dauerhaft (profile.lists, für alle Reisen) oder nur für eine Reise (trip.lists) */
 const OWN = "__own";
-const LIST_NAMES = { vaccine: "EMERGENCY – Impfungen", transportType: "Verkehr – Art", payment: "Zahlart", placeCat: "Orte – Kategorie", excType: "Ausflüge – Art", expCat: "Ausgaben – Kategorie", packCat: "Packliste – Kategorie" };
+const LIST_NAMES = { vaccine: "EMERGENCY – Impfungen", transportType: "Verkehr – Art", payment: "Zahlart", placeCat: "Orte – Kategorie", foodCat: "Restaurants & Bars – Kategorie", excType: "Ausflüge – Art", expCat: "Ausgaben – Kategorie", packCat: "Packliste – Kategorie" };
 const listName = (k) => LIST_NAMES[k] || (k.startsWith("expTitle:") ? `Ausgaben – Wofür? (${k.slice(9)})` : k.startsWith("packItem:") ? `Packliste – Dinge (${k.slice(9)})` : k);
 function ownKeys() {
   const ec = [...new Set([...EXP_CATS, ...(profile.lists?.expCat || [])])], pc = [...new Set([...PACK_CATS, ...(profile.lists?.packCat || [])])];
-  return ["payment", "transportType", "placeCat", "excType", "expCat", ...ec.map((c) => "expTitle:" + c), "packCat", ...pc.map((c) => "packItem:" + c), "vaccine"];
+  return ["payment", "transportType", "placeCat", "foodCat", "excType", "expCat", ...ec.map((c) => "expTitle:" + c), "packCat", ...pc.map((c) => "packItem:" + c), "vaccine"];
 }
 const ownVals = (key) => [...(profile.lists?.[key] || []), ...(trip()?.lists?.[key] || [])];
 function choiceOpts(key, base, value, blank) {
@@ -1207,6 +1209,102 @@ function gmApply(w, txt) {
   w.querySelector(".gm-box").hidden = true;
   return true;
 }
+/* Dokumente (Tickets, Bestätigungen) und Titelbilder: liegen als Dateien in der Browser-Datenbank dieses Geräts */
+let idb = null, docIndex = [], coverUrl = {};
+function idbOpen() { return new Promise((res) => { try { const r = indexedDB.open("reiseplaner-dokumente", 1); r.onupgradeneeded = () => r.result.createObjectStore("docs", { keyPath: "id" }); r.onsuccess = () => res(r.result); r.onerror = r.onblocked = () => res(null); } catch { res(null); } }); }
+const idbReq = (rw, fn) => new Promise((res) => { if (!idb) return res(null); try { const tx = idb.transaction("docs", rw); const rq = fn(tx.objectStore("docs")); tx.oncomplete = () => res(rq?.result ?? true); tx.onerror = tx.onabort = () => res(null); } catch { res(null); } });
+const docMeta = ({ data, ...m }) => m;
+async function docsInit() {
+  idb = await idbOpen(); if (!idb) return;
+  const all = (await idbReq("readonly", (o) => o.getAll())) || [];
+  docIndex = all.map(docMeta);
+  for (const d of all) if (d.kind === "cover") coverUrl[d.ownerId] = URL.createObjectURL(new Blob([d.data], { type: d.type }));
+  if (all.length && mode !== "loading" && !busy()) render();
+}
+const docsOf = (kind, ownerId) => docIndex.filter((d) => d.kind === kind && d.ownerId === ownerId);
+/** Fotos auf höchstens `max` Pixel Kantenlänge verkleinern (spart Speicher, bleibt gut lesbar) */
+async function shrinkImage(file, max, q) {
+  try {
+    const bmp = await createImageBitmap(file); const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    if (k === 1 && file.size < 1.5e6) return file;
+    const c = document.createElement("canvas"); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", q));
+    return blob && blob.size < file.size ? new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" }) : file;
+  } catch { return file; }
+}
+async function docPut(kind, ownerId, file, tripId) {
+  if (!idb) return "Auf diesem Gerät können gerade keine Dateien abgelegt werden (z. B. privates Fenster).";
+  const isImg = /^image\/(?!svg)/.test(file.type), isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  if (!isImg && !isPdf) return "Bitte ein Foto oder eine PDF-Datei wählen.";
+  if (isImg) file = await shrinkImage(file, kind === "cover" ? 1600 : 2200, kind === "cover" ? 0.82 : 0.86);
+  if (file.size > 15e6) return "Die Datei ist größer als 15 MB. Bitte eine kleinere wählen.";
+  const rec = { id: kind === "cover" ? "cover_" + ownerId : uid(), tripId, kind, ownerId, name: file.name || (isPdf ? "Dokument.pdf" : "Foto.jpg"), type: isPdf ? "application/pdf" : file.type, size: file.size, added: new Date().toISOString(), data: await file.arrayBuffer() };
+  if (!(await idbReq("readwrite", (o) => o.put(rec)))) return "Die Datei konnte nicht abgelegt werden (Speicher voll?).";
+  docIndex = docIndex.filter((d) => d.id !== rec.id).concat(docMeta(rec));
+  if (kind === "cover") { if (coverUrl[ownerId]) URL.revokeObjectURL(coverUrl[ownerId]); coverUrl[ownerId] = URL.createObjectURL(new Blob([rec.data], { type: rec.type })); }
+  return null;
+}
+async function docsRemove(test) {
+  const gone = docIndex.filter(test); if (!gone.length) return;
+  for (const d of gone) { await idbReq("readwrite", (o) => o.delete(d.id)); if (d.kind === "cover" && coverUrl[d.ownerId]) { URL.revokeObjectURL(coverUrl[d.ownerId]); delete coverUrl[d.ownerId]; } }
+  docIndex = docIndex.filter((d) => !gone.includes(d));
+}
+const fSize = (n) => (n >= 1e6 ? (n / 1e6).toLocaleString("de-DE", { maximumFractionDigits: 1 }) + " MB" : Math.max(1, Math.round(n / 1e3)) + " KB");
+function docBar(kind, ownerId) {
+  const list = docsOf(kind, ownerId);
+  return `<div class="row docbar" style="gap:8px;flex-wrap:wrap;align-items:center">${list.map((d) => `<span class="doc"><button type="button" class="link" data-act="doc-open" data-id="${d.id}" title="${esc(d.name)} · ${fSize(d.size)}">📎 ${esc(d.name.length > 28 ? d.name.slice(0, 25) + "…" : d.name)}</button><button type="button" class="link" data-act="doc-del" data-id="${d.id}" aria-label="${esc(d.name)} entfernen">×</button></span>`).join("")}
+    <label class="link small doc-add" for="doc-${ownerId}">+ Dokument<input type="file" id="doc-${ownerId}" accept="image/*,application/pdf,.pdf" data-doc-kind="${kind}" data-doc-owner="${ownerId}" hidden></label></div>`;
+}
+let viewerUrl = null;
+function closeViewer() { document.getElementById("doc-viewer")?.remove(); if (viewerUrl) { URL.revokeObjectURL(viewerUrl); viewerUrl = null; } document.body.style.overflow = ""; }
+async function docOpen(id) {
+  const rec = await idbReq("readonly", (o) => o.get(id)); if (!rec) return toast("Das Dokument wurde nicht gefunden.");
+  closeViewer();
+  const blob = new Blob([rec.data], { type: rec.type }); viewerUrl = URL.createObjectURL(blob);
+  const v = document.createElement("div"); v.id = "doc-viewer";
+  v.style.cssText = "position:fixed;inset:0;z-index:9000;background:#111;display:flex;flex-direction:column";
+  v.innerHTML = `<div style="display:flex;gap:8px;align-items:center;padding:calc(8px + env(safe-area-inset-top,0px)) 12px 8px;background:#1d1d1d;color:#fff">
+    <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600"></span>
+    <button type="button" data-v="share" style="background:#fff;color:#111;border:0;border-radius:10px;padding:8px 12px;font:inherit;font-weight:600">Teilen / Sichern</button>
+    <button type="button" data-v="close" style="background:transparent;color:#fff;border:1px solid #777;border-radius:10px;padding:8px 12px;font:inherit">Schließen</button></div>
+    <div data-v="body" style="flex:1;overflow:auto;-webkit-overflow-scrolling:touch;text-align:center;padding:8px"></div>`;
+  v.querySelector("span").textContent = rec.name;
+  const body = v.querySelector('[data-v="body"]');
+  v.querySelector('[data-v="close"]').onclick = closeViewer;
+  v.querySelector('[data-v="share"]').onclick = () => offerFile(rec.name, blob, (m) => toast(m));
+  document.body.appendChild(v); document.body.style.overflow = "hidden";
+  if (rec.type !== "application/pdf") { const img = new Image(); img.src = viewerUrl; img.alt = rec.name; img.style.cssText = "max-width:100%;height:auto;background:#fff"; body.appendChild(img); return; }
+  body.innerHTML = '<p style="color:#ccc">PDF wird geöffnet …</p>';
+  try {
+    const lib = await pdfViewerLib(); if (!document.getElementById("doc-viewer")) return;
+    const pdf = await lib.getDocument({ data: rec.data.slice(0) }).promise; body.innerHTML = "";
+    const w = Math.min(body.clientWidth - 16, 1100), dpr = Math.min(window.devicePixelRatio || 1, 2);
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i); const vp1 = page.getViewport({ scale: 1 }); const vp = page.getViewport({ scale: (w / vp1.width) * dpr });
+      const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height; c.style.cssText = `width:${w}px;max-width:100%;height:auto;background:#fff;margin:0 auto 8px;display:block`;
+      if (!document.getElementById("doc-viewer")) return; body.appendChild(c);
+      await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+    }
+  } catch { body.innerHTML = '<p style="color:#ccc;max-width:420px;margin:40px auto">Die PDF-Vorschau ist hier nicht verfügbar. Über „Teilen / Sichern“ lässt sich die Datei in einer anderen App öffnen.</p>'; }
+}
+/* PDF-Anzeige: in der Webfassung liegt pdf.js neben der Seite; sonst nur „Teilen / Sichern“ */
+let pdfLibP = null;
+function pdfViewerLib() { return (pdfLibP ||= (typeof WEB !== "undefined" && WEB ? import("./pdf.min.js").then((m) => { m.GlobalWorkerOptions.workerSrc = "./pdf.worker.min.js"; return m; }) : Promise.reject(new Error("keine Vorschau"))).catch((e) => { pdfLibP = null; throw e; })); }
+/* Route vom aktuellen Standort zum Ziel: die Karten-App ermittelt den Standort selbst, die App speichert nichts */
+const routeLink = (name, address) => { const dest = [name, address || trip()?.destination].filter(Boolean).join(", "); return dest ? `<a class="maplink small" href="${mapApp === "apple" ? "https://maps.apple.com/?dirflg=d&daddr=" : "https://www.google.com/maps/dir/?api=1&destination="}${encodeURIComponent(dest)}" target="_blank" rel="noreferrer">🧭 Route hierher</a>` : ""; };
+/* Treffpunkt „Hotel“ o. Ä.: Route zur Unterkunft dieses Tages; sonst zum Treffpunkt, ergänzt um das Reiseziel */
+function meetRoute(x) {
+  const mp = (x.meetingPoint || "").trim(); if (!mp) return "";
+  if (/^(im |am |vor dem |das )?(hotel|unterkunft|lobby|hotellobby|hotel-lobby)$/i.test(mp)) {
+    const st0 = of("accommodations").find((a) => a.checkIn.slice(0, 10) <= x.date && x.date <= (a.checkOut || "").slice(0, 10));
+    if (st0) return routeLink(st0.name, st0.address);
+  }
+  const dest = trip()?.destination || "";
+  return routeLink("", dest && !mp.toLowerCase().includes(dest.toLowerCase()) ? `${mp}, ${dest}` : mp);
+}
+const webHref = (u) => (/^https?:\/\//i.test(u) ? u : "https://" + u);
+const spot = (id) => (id ? db.places.find((p) => p.id === id) || db.restaurants.find((p) => p.id === id) : undefined);
 const mapLink = (text, cls = "small") => (text ? `<a class="maplink ${cls}" href="${mapApp === "apple" ? "https://maps.apple.com/?q=" : "https://www.google.com/maps/search/?api=1&query="}${encodeURIComponent(text)}" target="_blank" rel="noreferrer">📍 ${esc(text)}</a>` : "");
 /** Code oder Nummer zum Antippen = in die Zwischenablage */
 const copyBtn = (v) => (v ? `<button type="button" class="code" data-act="copy" data-v="${esc(v)}" title="Kopieren">${esc(v)}</button>` : "");
@@ -1497,6 +1595,15 @@ function applyImport(d, replaceIds, replaceProfile) {
     for (const [k, arr] of Object.entries(d.profile.lists)) if (Array.isArray(arr)) for (const v of arr) { const a = (profile.lists[k] ||= []); if (typeof v === "string" && !a.includes(v)) { a.push(v); n++; } }
     if (n) { saveProfile(); prof += ` ${n} eigene Auswahl-${n === 1 ? "Eintrag" : "Einträge"} übernommen.`; }
   }
+  if (Array.isArray(d.docs) && d.docs.length) (async () => {
+    let n = 0;
+    for (const x of d.docs) {
+      if (!x?.id || !x.b64 || !db.trips.some((t) => t.id === x.tripId) || docIndex.some((y) => y.id === x.id)) continue;
+      try { const bin = atob(x.b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); const { b64, ...m } = x; const rec = { ...m, data: u.buffer };
+        if (await idbReq("readwrite", (o) => o.put(rec))) { docIndex.push(docMeta(rec)); if (rec.kind === "cover") coverUrl[rec.ownerId] = URL.createObjectURL(new Blob([rec.data], { type: rec.type })); n++; } } catch {}
+    }
+    if (n) { st.bkNote = (st.bkNote || "") + ` ${n} ${n === 1 ? "Dokument" : "Dokumente"} übernommen.`; if (!busy()) render(); }
+  })();
   if (undo.added.length || undo.replaced.length || undo.persons) undoSet(undo);
   save();
   const parts = [];
@@ -1654,7 +1761,14 @@ const FIELDS = {
   ],
   places: [
     { n: "name", l: "Name", req: 1 }, { n: "category", l: "Kategorie", t: "choice", key: "placeCat", base: () => pairs(PLACE_CATS), blank: "– bitte wählen –" },
-    { n: "address", l: "Adresse", full: 1 }, { n: "url", l: "Website", t: "url", full: 1 },
+    { n: "address", l: "Adresse", full: 1 },
+    { n: "hours", l: "Öffnungszeiten", ph: "z. B. tägl. 8–18 Uhr" }, { n: "url", l: "Website", ph: "www.…" },
+    { n: "notes", l: "Notizen", t: "textarea", full: 1 },
+  ],
+  restaurants: [
+    { n: "name", l: "Name", req: 1 }, { n: "category", l: "Kategorie", t: "choice", key: "foodCat", base: () => pairs(FOOD_CATS), blank: "– bitte wählen –" },
+    { n: "address", l: "Adresse", full: 1 },
+    { n: "hours", l: "Öffnungszeiten", ph: "z. B. tägl. 11–23 Uhr" }, { n: "url", l: "Website", ph: "www.…" },
     { n: "notes", l: "Notizen", t: "textarea", full: 1 },
   ],
 };
@@ -1663,6 +1777,7 @@ const SORT = {
   excursions: (a, b) => (a.date + (a.startTime || "")).localeCompare(b.date + (b.startTime || "")),
   accommodations: (a, b) => a.checkIn.localeCompare(b.checkIn),
   places: (a, b) => (a.visited - b.visited) || a.name.localeCompare(b.name, "de"),
+  restaurants: (a, b) => (a.visited - b.visited) || a.name.localeCompare(b.name, "de"),
 };
 
 function fieldsHtml(kind, v = {}) {
@@ -1674,7 +1789,7 @@ function fieldsHtml(kind, v = {}) {
     let ctl;
     if (f.t === "select") ctl = `<select id="${id}" name="${f.n}">${f.opts.map(([k, l]) => `<option value="${k}" ${v[f.n] === k ? "selected" : ""}>${l}</option>`).join("")}</select>`;
     else if (f.t === "textarea") ctl = `<textarea id="${id}" name="${f.n}" rows="2">${val}</textarea>`;
-    else ctl = `<input id="${id}" name="${f.n}" type="${f.t || "text"}" ${f.t === "number" ? 'step="0.01" min="0"' : ""} value="${val}" ${f.req ? "required" : ""}>`;
+    else ctl = `<input id="${id}" name="${f.n}" type="${f.t || "text"}" ${f.t === "number" ? 'step="0.01" min="0"' : ""} value="${val}" ${f.ph ? `placeholder="${esc(f.ph)}"` : ""} ${f.req ? "required" : ""}>`;
     return `<label class="f ${f.full ? "full" : ""}" for="${id}">${f.l}${f.req ? " *" : ""}${ctl}</label>` + (f.n === "address" ? gmBtn(FIELDS[kind].some((x) => x.n === "name") ? `f-${kind}-name` : "", id) : "");
   }).join("");
 }
@@ -1713,7 +1828,7 @@ function viewTrips() {
     const n = (k) => db[k].filter((x) => x.tripId === t.id).length;
     const left = Math.ceil((D(t.startDate) - D(today)) / 864e5);
     return `<button class="trip-card" data-act="open" data-id="${t.id}">
-      <div class="band" style="background:${esc(t.coverColor)}"></div>
+      <div class="band" style="background:${coverUrl[t.id] ? `url('${coverUrl[t.id]}') center/cover no-repeat, ${esc(t.coverColor)};height:92px` : esc(t.coverColor)}"></div>
       <div class="in"><h3>${esc(t.title)}</h3><span class="muted small">${esc(t.destination)}</span>
       <span class="small">${fShort(t.startDate)} – ${fDate(t.endDate)}</span>
       ${left > 0 ? `<span class="days-left">noch ${left} Tage</span>` : ""}
@@ -1727,8 +1842,8 @@ function viewTrips() {
     ${sec("Bevorstehend", up)}${sec("Vergangen", past)}
     ${db.trips.length ? `<p class="small muted">Zum Ausprobieren: <button class="link" data-act="sample">Beispielreise hinzufügen</button></p>` : ""}
     <div class="panel stack" style="gap:8px"><span class="eyebrow">Sicherung</span>
-      <span class="small muted">Alle Reisen und Notfalldaten als eine Datei sichern oder eine Sicherung wieder einspielen. Beim Einspielen kommen fehlende Reisen dazu; bei schon vorhandenen fragt die App, ob ersetzt oder behalten werden soll.</span>
-      <div class="row"><button class="ghost" data-act="backup-save">Sicherung speichern</button><label class="btn ghost-btn" for="bk-file">Sicherung laden<input type="file" id="bk-file" accept=".json,application/json" hidden></label></div>
+      <span class="small muted">Alle Reisen und Notfalldaten als eine Datei sichern oder eine Sicherung wieder einspielen. Beim Einspielen kommen fehlende Reisen dazu; bei schon vorhandenen fragt die App, ob ersetzt oder behalten werden soll. Abgelegte Dokumente und Titelbilder stecken nur in der „Sicherung mit Dokumenten“.</span>
+      <div class="row"><button class="ghost" data-act="backup-save">Sicherung speichern</button>${docIndex.length ? `<button class="ghost" data-act="backup-docs">Sicherung mit Dokumenten</button>` : ""}<label class="btn ghost-btn" for="bk-file">Sicherung laden<input type="file" id="bk-file" accept=".json,application/json" hidden></label></div>
       ${st.imp ? importDialog() : ""}
       ${undoData() ? `<div class="row" style="gap:8px"><button type="button" class="link" data-act="imp-undo">Letztes Laden rückgängig machen</button></div>` : ""}
       <p class="hint">${esc(bkLine())}</p>
@@ -1762,6 +1877,10 @@ function viewTripForm() {
       <label class="f" for="t-tz">Zeitverschiebung am Reiseziel<select id="t-tz" name="tzOffset">${TZ_OPTIONS.map((o) => `<option value="${o}" ${num(t.tzOffset || 0) === o ? "selected" : ""}>${o === 0 ? "keine" : fmtOff(o) + (o > 0 ? " später" : " früher")}</option>`).join("")}</select></label>
       <span class="hint" style="align-self:end">Beispiel Bangkok: +6 Std. später (im deutschen Winter).</span>
       <label class="f full" for="t-notes">Notizen<textarea id="t-notes" name="notes" rows="3">${esc(t.notes)}</textarea></label>
+      ${st.tripForm === "new" ? `<span class="hint full">Ein Titelbild lässt sich nach dem Anlegen über „Bearbeiten“ wählen.</span>` : `<div class="stack full" style="gap:6px"><span class="small" style="font-weight:600">Titelbild</span>
+        <div id="cover-prev">${coverUrl[t.id] ? `<img src="${coverUrl[t.id]}" alt="Titelbild" style="width:100%;max-height:140px;object-fit:cover;border-radius:10px">` : ""}</div>
+        <div class="row" style="gap:8px"><label class="btn ghost-btn" for="cover-file">Foto wählen<input type="file" id="cover-file" accept="image/*" hidden></label><button type="button" class="link" data-act="cover-del" ${coverUrl[t.id] ? "" : "hidden"}>Titelbild entfernen</button></div>
+        <span class="hint">Das Bild liegt nur auf diesem Gerät und wird sofort gespeichert.</span></div>`}
       ${st.error ? `<p class="err full">${esc(st.error)}</p>` : ""}
       <div class="row full"><button>${st.tripForm === "new" ? "Reise anlegen" : "Speichern"}</button><button type="button" class="ghost" data-act="cancel-trip">Abbrechen</button>
       ${st.tripForm !== "new" ? (st.confirmDel === "trip" ? `<span class="confirm">Mit allen Einträgen löschen? <button type="button" class="danger" data-act="del-trip-yes">Ja, löschen</button><button type="button" class="link" data-act="del-no">Nein</button></span>` : `<button type="button" class="link" data-act="del-trip">Reise löschen</button>`) : ""}</div>
@@ -1771,9 +1890,9 @@ function viewTripForm() {
 function viewTrip() {
   const t = trip();
   if (!t) { st.tripId = null; return viewTrips(); }
-  const tabs = [["overview", "Übersicht"], ["transports", "Verkehr"], ["accommodations", "Unterkünfte"], ["places", "Orte"], ["excursions", "Ausflüge"], ["itinerary", "Tagesplan"], ["expenses", "Ausgaben"], ["packing", "Packliste"], ["export", "Ausgabe"], ["emergency", "EMERGENCY"], ["hints", "Hinweise"]];
+  const tabs = [["overview", "Übersicht"], ["transports", "Verkehr"], ["accommodations", "Unterkünfte"], ["places", "Orte"], ["restaurants", "Restaurants & Bars"], ["excursions", "Ausflüge"], ["itinerary", "Tagesplan"], ["expenses", "Ausgaben"], ["packing", "Packliste"], ["export", "Ausgabe"], ["emergency", "EMERGENCY"], ["hints", "Hinweise"]];
   const body = { overview: viewOverview, itinerary: viewItinerary, expenses: viewExpenses, packing: viewPacking, export: viewExport, emergency: () => viewEmergency(trip()), hints: viewHints }[st.tab] || (() => viewList(st.tab));
-  return `<div class="hero" style="background:${esc(t.coverColor)}">
+  return `<div class="hero" style="background:${coverUrl[t.id] ? `linear-gradient(rgba(0,0,0,.18), rgba(0,0,0,.62)), url('${coverUrl[t.id]}') center/cover no-repeat, ${esc(t.coverColor)};min-height:170px;justify-content:space-between` : esc(t.coverColor)}">
       <button class="back" data-act="home">← Alle Reisen</button>
       <div class="row between" style="align-items:flex-end"><div><h1>${esc(t.title)}</h1><div class="sub">${esc(t.destination)} · ${fDate(t.startDate)} – ${fDate(t.endDate)}</div></div>
       <button class="ghost" data-act="edit-trip">Bearbeiten</button></div></div>
@@ -1801,7 +1920,7 @@ function viewOverview() {
   for (const a of of("accommodations")) { ev.push({ home: homeAt(t, a.checkIn), at: a.checkIn, notime: a.checkIn.length <= 10, icon: "🏨", text: `Check-in ${a.name}` }); ev.push({ home: homeAt(t, a.checkOut), at: a.checkOut, notime: a.checkOut.length <= 10, icon: "🧳", text: `Check-out ${a.name}` }); }
   for (const x of of("parking")) { ev.push({ at: x.startAt, notime: x.startAt.length <= 10, icon: "🅿", text: `Einfahrt ${x.name}` }); ev.push({ at: x.endAt, notime: x.endAt.length <= 10, icon: "🅿", text: `Ausfahrt ${x.name}` }); }
   for (const x of of("excursions")) ev.push({ home: homeAt(t, x.date + (x.startTime ? "T" + x.startTime : "")), at: x.date + (x.startTime ? "T" + x.startTime : ""), notime: !x.startTime, icon: "🎟", text: x.title, sub: x.meetingPoint || "" });
-  for (const i of of("itinerary")) ev.push({ home: i.startTime ? homeAt(t, `${i.date}T${i.startTime}`) : "", at: `${i.date}T${i.startTime || "23:59"}`, notime: !i.startTime, icon: "📍", text: i.title, sub: db.places.find((p) => p.id === i.placeId)?.name });
+  for (const i of of("itinerary")) ev.push({ home: i.startTime ? homeAt(t, `${i.date}T${i.startTime}`) : "", at: `${i.date}T${i.startTime || "23:59"}`, notime: !i.startTime, icon: "📍", text: i.title, sub: spot(i.placeId)?.name });
   ev.sort((a, b) => a.at.localeCompare(b.at));
   const byDay = {}; for (const e of ev) (byDay[e.at.slice(0, 10)] ||= []).push(e);
   const pk = of("packing"), pl = of("places");
@@ -1830,7 +1949,7 @@ function actions(kind, id, question = "Löschen?") {
 }
 
 function viewList(kind) {
-  const titles = { transports: ["Verkehrsmittel", "Noch keine Flüge, Züge oder Fahrten erfasst."], accommodations: ["Unterkünfte", "Noch keine Unterkunft erfasst."], places: ["Sehenswürdigkeiten", "Noch keine Sehenswürdigkeiten gesammelt."], excursions: ["Gebuchte Ausflüge", "Noch keine Ausflüge erfasst."] };
+  const titles = { transports: ["Verkehrsmittel", "Noch keine Flüge, Züge oder Fahrten erfasst."], accommodations: ["Unterkünfte", "Noch keine Unterkunft erfasst."], places: ["Sehenswürdigkeiten", "Noch keine Sehenswürdigkeiten gesammelt."], restaurants: ["Restaurants & Bars", "Noch keine Restaurants oder Bars gesammelt."], excursions: ["Gebuchte Ausflüge", "Noch keine Ausflüge erfasst."] };
   const items = of(kind).sort(SORT[kind]);
   const card = (x, paired) => {
     if (st.editing === x.id) return formFor(kind, x);
@@ -1838,25 +1957,29 @@ function viewList(kind) {
         ${mapLink(x.toLocation && x.toLocation !== x.fromLocation ? x.toLocation : x.fromLocation)}
         <span class="small">Einfahrt ${dtShort(x.departAt)}${x.arriveAt ? ` – Ausfahrt ${dtShort(x.arriveAt)}` : ""}</span>
         <span class="meta">${[x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.number && `Kennzeichen ${esc(x.number)}`, num(x.price) && fMoney(num(x.price))].filter(Boolean).join(" · ")}</span>
-        ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}</div>${actions(kind, x.id)}</div>`;
+        ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}${docBar(kind, x.id)}</div>${actions(kind, x.id)}</div>`;
     if (kind === "transports") return `<div class="ticket"><div class="main">
         <div class="row">${paired ? `<span class="chip leg">${legLabel(x)}</span>` : ""}<span class="chip">${TYPE_ICON[x.type] || "•"} ${esc(typeLabel(x.type))}</span><span class="small muted">${esc([x.carrier, x.number].filter(Boolean).join(" · "))}</span></div>
         <div class="route"><div><div class="t">${tm(x.departAt)}</div><div class="p">${esc(x.fromLocation)}</div><div class="meta">${fShort(x.departAt)}</div></div>
         <span class="arrow">→</span>
         <div class="to"><div class="t">${tm(x.arriveAt)}</div><div class="p">${esc(x.toLocation)}</div><div class="meta">${x.arriveAt ? fShort(x.arriveAt) : ""}</div></div></div>
-        ${x.notes ? `<div class="meta">${esc(x.notes)}</div>` : ""}</div>
+        ${x.notes ? `<div class="meta">${esc(x.notes)}</div>` : ""}${docBar(kind, x.id)}</div>
         <div class="stub"><div style="text-align:right">${x.bookingRef ? `<div class="eyebrow">Buchung</div><div class="mono">${esc(x.bookingRef)}</div>` : ""}${x.seat ? `<div class="eyebrow" style="margin-top:6px">Sitz</div><div class="mono">${esc(x.seat)}</div>` : ""}${num(x.price) ? `<div class="eyebrow" style="margin-top:6px">Preis</div><div class="mono">${fMoney(num(x.price))}</div>` : ""}</div>${actions(kind, x.id, paired ? "Ganze Verbindung löschen (alle Teilstrecken)?" : "Löschen?")}</div></div>`;
-    if (kind === "accommodations") return `<div class="item"><div class="body"><h3>${esc(x.name)}</h3>${mapLink(x.address)}
+    if (kind === "accommodations") return `<div class="item"><div class="body"><h3>${esc(x.name)}</h3>${mapLink(x.address)}${routeLink(x.name, x.address)}
         <span class="small">${dtShort(x.checkIn)} – ${dtShort(x.checkOut)} · ${(() => { const n = Math.max(1, Math.round((D(x.checkOut.slice(0, 10)) - D(x.checkIn.slice(0, 10))) / 864e5)); return n === 1 ? "1 Nacht" : n + " Nächte"; })()}</span>
         <span class="meta">${[x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.phone && `Tel. ${esc(x.phone)}`, num(x.price) && fMoney(num(x.price))].filter(Boolean).join(" · ")}</span>
-        ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}${x.url ? `<a class="small" href="${esc(x.url)}" target="_blank" rel="noreferrer">Website öffnen</a>` : ""}</div>${actions(kind, x.id)}</div>`;
+        ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}${x.url ? `<a class="small" href="${esc(x.url)}" target="_blank" rel="noreferrer">Website öffnen</a>` : ""}${docBar(kind, x.id)}</div>${actions(kind, x.id)}</div>`;
     if (kind === "excursions") return `<div class="item"><div class="body"><div class="row" style="gap:8px"><span class="chip">${fShort(x.date)}${x.startTime ? ", " + x.startTime + (x.endTime ? "–" + x.endTime : "") : ""}</span><b>${esc(x.title)}</b>${x.kind && x.kind !== x.title ? `<span class="chip">${esc(x.kind)}</span>` : ""}</div>
-        ${x.meetingPoint ? `<span class="small muted">Treffpunkt: ${mapLink(x.meetingPoint)}</span>` : ""}
+        ${x.meetingPoint ? `<span class="small muted">Treffpunkt: ${mapLink(x.meetingPoint)}</span>${meetRoute(x)}` : ""}
         <span class="meta">${[esc(x.provider || ""), x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.persons && `${esc(x.persons)} Pers.`, x.phone && `Tel. ${esc(x.phone)}`, num(x.price) && fMoney(num(x.price))].filter(Boolean).join(" · ")}</span>
-        ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}${x.url ? `<a class="small" href="${esc(x.url)}" target="_blank" rel="noreferrer">Website öffnen</a>` : ""}</div>${actions(kind, x.id)}</div>`;
-    return `<div class="item"><input type="checkbox" id="v-${x.id}" data-act="visit" data-id="${x.id}" ${x.visited ? "checked" : ""} aria-label="besucht">
+        ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}${x.url ? `<a class="small" href="${esc(x.url)}" target="_blank" rel="noreferrer">Website öffnen</a>` : ""}${docBar(kind, x.id)}</div>${actions(kind, x.id)}</div>`;
+    return `<div class="item"><input type="checkbox" id="v-${x.id}" data-act="visit" data-kind="${kind}" data-id="${x.id}" ${x.visited ? "checked" : ""} aria-label="besucht">
         <div class="body"><div class="row" style="gap:8px"><b class="${x.visited ? "done" : ""}">${esc(x.name)}</b>${x.category ? `<span class="chip">${esc(x.category)}</span>` : ""}</div>
-        ${mapLink(x.address)}${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}</div>${actions(kind, x.id)}</div>`;
+        ${mapLink(x.address)}
+        ${x.hours ? `<span class="small">🕒 ${esc(x.hours)}</span>` : ""}
+        ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}
+        <div class="row" style="gap:14px;flex-wrap:wrap">${routeLink(x.name, x.address)}${x.url ? `<a class="small" href="${esc(webHref(x.url))}" target="_blank" rel="noreferrer">🌐 Website</a>` : ""}</div>
+        ${docBar(kind, x.id)}</div>${actions(kind, x.id)}</div>`;
   };
   return `<div class="stack"><div class="row between"><h2>${titles[kind][0]}</h2>${st.editing ? "" : `<button data-act="add">+ Hinzufügen</button>`}</div>
     ${st.editing === "new" ? formFor(kind, null) : ""}
@@ -1893,14 +2016,14 @@ function viewItinerary() {
   const minDays = lastUsed ? days(t.startDate, lastUsed).length : 1;
   const off = num(t.tzOffset);
   const ht = (time, inTrip) => (inTrip && off && time ? `<span class="hometime">🏠 ${homeTime(time, off)}</span>` : "");
-  const own = (x, inTrip) => `<div class="slot"><span class="time">${x.startTime || "–"}${x.endTime ? "–" + x.endTime : ""}${ht(x.startTime, inTrip)}</span><span><b>${esc(x.title)}</b>${x.placeId ? ` <span class="small muted">📍 ${esc(places.find((p) => p.id === x.placeId)?.name)}</span>` : ""}${x.notes ? `<br><span class="meta">${esc(x.notes)}</span>` : ""}</span>
+  const own = (x, inTrip) => `<div class="slot"><span class="time">${x.startTime || "–"}${x.endTime ? "–" + x.endTime : ""}${ht(x.startTime, inTrip)}</span><span><b>${esc(x.title)}</b>${x.placeId ? ` <span class="small muted">📍 ${esc(spot(x.placeId)?.name)}</span>` : ""}${x.notes ? `<br><span class="meta">${esc(x.notes)}</span>` : ""}</span>
         ${st.confirmDel === x.id ? `<span class="confirm"><button class="danger" data-act="del-yes" data-kind="itinerary" data-id="${x.id}">Löschen</button><button class="link" data-act="del-no">Nein</button></span>` : `<button class="link" data-act="del" data-id="${x.id}" aria-label="Löschen">✕</button>`}</div>`;
   const au = (a, inTrip) => `<div class="slot auto"><span class="time">${a.start ? a.start + (a.end ? "–" + a.end : "") : "–"}${a.src === "transports" ? (a.start && homeAt(t, `${a.date}T${a.start}`, "transport", a.type) ? `<span class="hometime">🏠 ${homeAt(t, `${a.date}T${a.start}`, "transport", a.type)}</span>` : "") : ht(a.start, inTrip)}</span><span>${a.icon} <b>${esc(a.title)}</b>${a.sub ? `<br><span class="meta">${esc(a.sub)}</span>` : ""}</span><button class="link" data-act="tab" data-id="${a.src === "parking" ? "transports" : a.src}">${SRC_LABEL[a.src]} ›</button></div>`;
   const form = (d) => `<form class="grid2" data-form="itinerary" data-day="${d}">
         <label class="f full" for="i-title">Was? *<input id="i-title" name="title" required></label>
         ${dtField("i-s", "startTime", "Von", "", "time")}
         ${dtField("i-e", "endTime", "Bis", "", "time")}
-        <label class="f full" for="i-p">Sehenswürdigkeit<select id="i-p" name="placeId"><option value="">– ohne –</option>${places.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select></label>
+        <label class="f full" for="i-p">Ort / Restaurant<select id="i-p" name="placeId"><option value="">– ohne –</option>${places.length ? `<optgroup label="Sehenswürdigkeiten">${places.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</optgroup>` : ""}${of("restaurants").length ? `<optgroup label="Restaurants & Bars">${of("restaurants").sort(SORT.restaurants).map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</optgroup>` : ""}</select></label>
         <label class="f full" for="i-n">Notiz<input id="i-n" name="notes"></label>
         <p class="err full" data-err hidden></p>
         <div class="row full"><button>Speichern</button><button type="button" class="ghost" data-act="cancel">Abbrechen</button></div></form>`;
@@ -1936,6 +2059,8 @@ function viewHints() {
     ["🏠 Zeit zu Hause", "Erscheint nur, wenn bei der Reise eine Zeitverschiebung eingestellt ist (Reise → Bearbeiten)."],
     ["Packliste, eigene Dinge", "Sie stehen künftig auch unter „Aus üblichen Dingen auswählen“, außer mit dem Haken „nur für diese Reise“."],
     ["Ausgabe", "„Zeitraum“ leer lassen = alles. „Ausgaben nur bezahlt“ blendet Offenes aus."],
+    ["📎 Dokumente und Titelbild", "Bei Verkehr, Unterkünften, Orten, Restaurants und Ausflügen lassen sich über „+ Dokument“ Fotos und PDFs ablegen (Ticket, Buchungsbestätigung) und offline öffnen. Sie liegen nur auf diesem Gerät. Aufs andere Gerät kommen sie mit „Sicherung mit Dokumenten“; die normale Sicherung enthält sie nicht."],
+    ["🧭 Route hierher", "Bei Orten, Restaurants, Unterkünften und Ausflugs-Treffpunkten öffnet der Knopf die Karten-App mit der Route vom aktuellen Standort. Gespeichert wird dabei nichts."],
     ["Daten und Sicherung", (mode === "cloud" ? "Die Daten liegen in deinem Claude-Konto." : "Die Daten liegen nur auf diesem Gerät.") + " „Sicherung laden“ fragt bei schon vorhandenen Reisen: ersetzen oder behalten. „Letztes Laden rückgängig machen“ holt den vorherigen Stand zurück."],
   ];
   return `<div class="stack" style="gap:12px"><h2>Hinweise</h2><div class="panel stack" style="gap:14px">${H.map(([h, t]) => `<div class="stack" style="gap:2px"><b>${esc(h)}</b><span class="small" style="text-align:justify;hyphens:auto">${esc(t)}</span></div>`).join("")}</div></div>`;
@@ -2081,7 +2206,7 @@ function viewPacking() {
    Ausgabe: Bausteine wählen → ein neutrales Berichtsmodell → je Format ein Baustein
    (Vorschau, Text, PDF, Word, Excel, CSV, Kalender). Neues Format = neuer Baustein.
    ===================================================================== */
-const PARTS = [["overview", "Übersicht & Zeitleiste"], ["transports", "Verkehr"], ["accommodations", "Unterkünfte"], ["places", "Orte"], ["excursions", "Ausflüge"], ["itinerary", "Tagesplan"], ["expenses", "Ausgaben"], ["packing", "Packliste"], ["emergency", "Notfallkarte (EMERGENCY)"]];
+const PARTS = [["overview", "Übersicht & Zeitleiste"], ["transports", "Verkehr"], ["accommodations", "Unterkünfte"], ["places", "Orte"], ["restaurants", "Restaurants & Bars"], ["excursions", "Ausflüge"], ["itinerary", "Tagesplan"], ["expenses", "Ausgaben"], ["packing", "Packliste"], ["emergency", "Notfallkarte (EMERGENCY)"]];
 const PRESETS = [
   { k: "komplett", l: "Komplette Reise", parts: PARTS.map((p) => p[0]).filter((k) => k !== "emergency"), paidOnly: false, notes: true },
   { k: "notfall", l: "Notfallkarte zum Mitnehmen", parts: ["emergency"], paidOnly: false, notes: true },
@@ -2110,7 +2235,7 @@ function buildReport(t, o) {
     for (const x of of("parking")) { ev.push({ at: x.startAt, what: `Parken, Einfahrt: ${x.name}`, more: x.bookingRef || "" }); ev.push({ at: x.endAt, what: `Parken, Ausfahrt: ${x.name}`, more: "" }); }
     for (const x of of("excursions")) ev.push({ at: x.date + (x.startTime ? "T" + x.startTime : ""), what: `Ausflug: ${x.title}`, more: x.meetingPoint ? "Treffpunkt: " + x.meetingPoint : "" });
     for (const a of of("accommodations")) { ev.push({ at: a.checkIn, what: `Check-in: ${a.name}`, more: a.address || "" }); ev.push({ at: a.checkOut, what: `Check-out: ${a.name}`, more: "" }); }
-    for (const i of of("itinerary")) ev.push({ at: i.date + (i.startTime ? "T" + i.startTime : ""), what: i.title, more: db.places.find((p) => p.id === i.placeId)?.name || "" });
+    for (const i of of("itinerary")) ev.push({ at: i.date + (i.startTime ? "T" + i.startTime : ""), what: i.title, more: spot(i.placeId)?.name || "" });
     const list = ev.filter((e) => inR(e.at.slice(0, 10))).sort((a, b) => a.at.localeCompare(b.at));
     const blocks = [{ t: "kv", rows: [["Reiseziel", t.destination || "–"], ["Zeitraum", `${fDate(t.startDate)} – ${fDate(t.endDate)}`], ["Dauer", `${days(t.startDate, t.endDate).length} Tage`], ...(num(t.budgetTotal) ? [["Budget", fMoney(num(t.budgetTotal))]] : [])] }];
     if (o.notes && t.notes) blocks.push({ t: "para", text: t.notes });
@@ -2153,11 +2278,11 @@ function buildReport(t, o) {
         rows: list.map((a) => [a.name, a.address || "", deD(a.checkIn), tOf(a.checkIn), deD(a.checkOut), tOf(a.checkOut), nights(a), a.bookingRef || "", a.phone || "", a.url || "", num(a.price) || null, ...(o.notes ? [a.notes || ""] : [])]) } });
   }
 
-  if (o.parts.has("places")) {
-    const list = of("places").sort(SORT.places);
-    secs.push({ key: "places", title: "Sehenswürdigkeiten",
-      blocks: list.length ? [{ t: "table", cols: [{ h: "Ort", w: 30 }, { h: "Kategorie", w: 16 }, { h: "Adresse", w: 40 }, { h: "Besucht", w: 14 }], rows: list.map((p) => [withNote(p.name, p.notes, o), p.category || "", p.address || "", p.visited ? "ja" : "–"]) }] : [{ t: "empty", text: "Noch keine Sehenswürdigkeiten gesammelt." }],
-      data: { cols: [{ h: "Name", wch: 26 }, { h: "Kategorie" }, { h: "Adresse", wch: 30 }, { h: "Website", wch: 24 }, { h: "Besucht" }, ...(o.notes ? [{ h: "Notizen", wch: 30 }] : [])], rows: list.map((p) => [p.name, p.category || "", p.address || "", p.url || "", p.visited ? "ja" : "nein", ...(o.notes ? [p.notes || ""] : [])]) } });
+  for (const [key, title, empty] of [["places", "Sehenswürdigkeiten", "Noch keine Sehenswürdigkeiten gesammelt."], ["restaurants", "Restaurants & Bars", "Noch keine Restaurants oder Bars gesammelt."]]) if (o.parts.has(key)) {
+    const list = of(key).sort(SORT[key]);
+    secs.push({ key, title,
+      blocks: list.length ? [{ t: "table", cols: [{ h: "Name", w: 26 }, { h: "Kategorie", w: 14 }, { h: "Adresse", w: 30 }, { h: "Öffnungszeiten", w: 18 }, { h: "Besucht", w: 12 }], rows: list.map((p) => [withNote(p.name, p.notes, o), p.category || "", p.address || "", p.hours || "", p.visited ? "ja" : "–"]) }] : [{ t: "empty", text: empty }],
+      data: { name: title.slice(0, 28), cols: [{ h: "Name", wch: 26 }, { h: "Kategorie" }, { h: "Adresse", wch: 30 }, { h: "Öffnungszeiten", wch: 20 }, { h: "Website", wch: 24 }, { h: "Besucht" }, ...(o.notes ? [{ h: "Notizen", wch: 30 }] : [])], rows: list.map((p) => [p.name, p.category || "", p.address || "", p.hours || "", p.url || "", p.visited ? "ja" : "nein", ...(o.notes ? [p.notes || ""] : [])]) } });
   }
 
   if (o.parts.has("excursions")) {
@@ -2179,7 +2304,7 @@ function buildReport(t, o) {
       blocks.push({ t: "sub", text: `${label} · ${fDate(d)}` });
       if (!l.length) { blocks.push({ t: "empty", text: "Noch nichts geplant." }); continue; }
       const row = (it) => it.own
-        ? [it.x.startTime ? it.x.startTime + (it.x.endTime ? "–" + it.x.endTime : "") : "–", withNote(it.x.title, it.x.notes, o), db.places.find((p) => p.id === it.x.placeId)?.name || ""]
+        ? [it.x.startTime ? it.x.startTime + (it.x.endTime ? "–" + it.x.endTime : "") : "–", withNote(it.x.title, it.x.notes, o), spot(it.x.placeId)?.name || ""]
         : [it.a.start ? it.a.start + (it.a.end ? "–" + it.a.end : "") : "–", it.a.title, it.a.sub];
       blocks.push({ t: "table", cols: [{ h: "Zeit", w: 16 }, { h: "Programm", w: 50 }, { h: "Ort · Details", w: 34 }], rows: l.map(row) });
       for (const it of l) { const r = row(it); data.push([label, isoToDe(d), r[0], r[1].split("\n")[0], r[2], it.own ? "Tagesplan" : SRC_LABEL[it.a.src], ...(o.notes ? [it.own ? it.x.notes || "" : ""] : [])]); }
@@ -2658,7 +2783,7 @@ function makeIcs(t, o) {
   if (o.parts.has("excursions")) for (const x of of("excursions")) if (inR(x.date)) { n++;
     ev(x.id, x.date + (x.startTime ? "T" + x.startTime : ""), x.endTime && x.startTime ? x.date + "T" + x.endTime : "", x.title, x.meetingPoint, [x.provider, x.bookingRef && "Buchung: " + x.bookingRef, x.persons && x.persons + " Personen", o.notes && x.notes].filter(Boolean).join("\n")); }
   if (o.parts.has("itinerary")) for (const i of of("itinerary")) if (inR(i.date)) { n++;
-    const pl = db.places.find((p) => p.id === i.placeId);
+    const pl = spot(i.placeId);
     ev(i.id, i.date + (i.startTime ? "T" + i.startTime : ""), i.endTime && i.startTime ? i.date + "T" + i.endTime : "", i.title, pl ? [pl.name, pl.address].filter(Boolean).join(", ") : "", o.notes ? i.notes : ""); }
   out.push("END:VCALENDAR");
   // Zeilen über 75 Zeichen falten
@@ -2804,6 +2929,21 @@ $app.addEventListener("click", (e) => {
   if (b.dataset.act === "seg-del") { const legEl = b.closest("[data-leg]"); b.closest("[data-seg]").remove(); renumberSegs(legEl); onDraft(); return; }
   if (b.dataset.act === "imp-cancel") { st.imp = null; st.bkNote = "Laden abgebrochen, nichts geändert."; render(); return; }
   if (b.dataset.act === "imp-undo") { st.bkNote = undoImport(); render(); return; }
+  if (b.dataset.act === "doc-open") { docOpen(b.dataset.id); return; }
+  if (b.dataset.act === "doc-del") {
+    if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "wirklich löschen?"; setTimeout(() => { if (b.isConnected) { b.dataset.sure = ""; b.textContent = "×"; } }, 4000); return; }
+    docsRemove((d) => d.id === b.dataset.id).then(() => { if (!busy()) render(); toast("Dokument entfernt"); }); return;
+  }
+  if (b.dataset.act === "cover-del") { docsRemove((d) => d.kind === "cover" && d.ownerId === st.tripId).then(() => { const pv = document.getElementById("cover-prev"); if (pv) pv.innerHTML = ""; b.hidden = true; toast("Titelbild entfernt"); }); return; }
+  if (b.dataset.act === "backup-docs") {
+    (async () => {
+      const recs = (await idbReq("readonly", (o) => o.getAll())) || [];
+      const b64 = (buf) => { let t = ""; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) t += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(t); };
+      const data = { ...backupData(), docs: recs.map(({ data, ...m }) => ({ ...m, b64: b64(data) })) };
+      const d = new Date().toLocaleDateString("sv-SE");
+      offerFile(`Reiseplaner_Sicherung_mit_Dokumenten_${d}.json`, JSON.stringify(data), (m) => { if (/übergeben|wurde gespeichert|heruntergeladen/.test(m)) markBackedUp(); st.bkNote = m; if (!busy()) render(); });
+    })(); return;
+  }
   if (b.dataset.act === "own-del") {
     const a = profile.lists?.[b.dataset.key]; if (a) { profile.lists[b.dataset.key] = a.filter((x) => x !== b.dataset.v); if (!profile.lists[b.dataset.key].length) delete profile.lists[b.dataset.key]; saveProfile(); }
     const open = b.closest("details")?.open; render(); if (open) { const d = [...$app.querySelectorAll("details.panel")].find((x) => x.textContent.includes("Eigene Auswahl-Einträge")); if (d) d.open = true; }
@@ -2851,9 +2991,9 @@ $app.addEventListener("click", (e) => {
     case "add-day": reset(); st.openDay = id; break;
     case "del": st.confirmDel = id; break;
     case "del-no": st.confirmDel = null; break;
-    case "del-yes": { const ids = kind === "transports" ? new Set(journeyOf(id).map((l) => l.id)) : new Set([id]); db[kind] = db[kind].filter((x) => !ids.has(x.id)); } if (kind === "places") db.itinerary.forEach((i) => { if (i.placeId === id) i.placeId = ""; }); save(); st.confirmDel = null; break;
+    case "del-yes": { const ids = kind === "transports" ? new Set(journeyOf(id).map((l) => l.id)) : new Set([id]); db[kind] = db[kind].filter((x) => !ids.has(x.id)); docsRemove((d) => ids.has(d.ownerId)); } if (kind === "places" || kind === "restaurants") db.itinerary.forEach((i) => { if (i.placeId === id) i.placeId = ""; }); save(); st.confirmDel = null; break;
     case "del-trip": st.confirmDel = "trip"; break;
-    case "del-trip-yes": for (const k of COLLS) db[k] = db[k].filter((x) => x.tripId !== st.tripId); db.trips = db.trips.filter((t) => t.id !== st.tripId); save(); st.tripId = null; st.tripForm = null; reset(); break;
+    case "del-trip-yes": { const gone = st.tripId; docsRemove((d) => d.tripId === gone); } for (const k of COLLS) db[k] = db[k].filter((x) => x.tripId !== st.tripId); db.trips = db.trips.filter((t) => t.id !== st.tripId); save(); st.tripId = null; st.tripForm = null; reset(); break;
     case "sample": addSample(); save(); break;
     case "migrate-yes": { const m = migration(); if (m) { for (const t of m.fresh) { db.trips.push(t); for (const k of COLLS) db[k].push(...(m.d[k] || []).filter((x) => x.tripId === t.id)); } save(); } markMigrated(); break; }
     case "migrate-no": markMigrated(); break;
@@ -2895,10 +3035,21 @@ $app.addEventListener("change", (e) => {
     return;
   }
   if (b.type !== "checkbox") return;
-  const coll = b.dataset.act === "pack" ? "packing" : b.dataset.act === "visit" ? "places" : null; if (!coll) return;
+  const coll = b.dataset.act === "pack" ? "packing" : b.dataset.act === "visit" ? (b.dataset.kind === "restaurants" ? "restaurants" : "places") : null; if (!coll) return;
   const x = db[coll].find((i) => i.id === b.dataset.id); x[coll === "packing" ? "packed" : "visited"] = b.checked; save(); render();
 });
 
+$app.addEventListener("change", (e) => {
+  const inp = e.target, file = inp.files?.[0];
+  if (!file || !(inp.dataset?.docOwner || inp.id === "cover-file")) return;
+  const cover = inp.id === "cover-file";
+  docPut(cover ? "cover" : inp.dataset.docKind, cover ? st.tripId : inp.dataset.docOwner, file, st.tripId).then((err) => {
+    inp.value = "";
+    if (err) return toast(err);
+    if (cover) { const pv = document.getElementById("cover-prev"); if (pv) pv.innerHTML = `<img src="${coverUrl[st.tripId]}" alt="Titelbild" style="width:100%;max-height:140px;object-fit:cover;border-radius:10px">`; const del = document.querySelector('[data-act="cover-del"]'); if (del) del.hidden = false; toast("Titelbild gespeichert"); return; }
+    if (!busy()) render(); toast("Dokument abgelegt");
+  });
+});
 $app.addEventListener("submit", (e) => {
   e.preventDefault();
   const f = e.target; const kind = f.dataset.form;
@@ -3006,7 +3157,7 @@ $app.addEventListener("submit", (e) => {
     const err2 = saveJourney(f);
     if (err2) { const el = f.querySelector("[data-err]"); el.textContent = err2; el.hidden = false; return; } // Eingaben bleiben stehen
   } else if (st.editing === "new") {
-    db[kind].push({ id: uid(), tripId: st.tripId, ...(kind === "places" ? { visited: false } : {}), ...o });
+    db[kind].push({ id: uid(), tripId: st.tripId, ...(kind === "places" || kind === "restaurants" ? { visited: false } : {}), ...o });
   } else {
     Object.assign(db[kind].find((x) => x.id === st.editing), o);
   }
