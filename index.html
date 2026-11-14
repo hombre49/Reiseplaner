@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v20">
+<meta name="reiseplaner-version" content="web-v21">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -563,7 +563,7 @@ const SUGGEST = {
   Elektronik: ["Handy", "Ladekabel", "Powerbank", "Reiseadapter", "Kopfhörer", "Kamera", "E-Reader"],
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
-const APP_VERSION = "web-v20";
+const APP_VERSION = "web-v21";
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
 const PAYS = { CARD: "Karte", CASH: "bar" };
@@ -652,6 +652,15 @@ const fRate = (v) => num(v).toLocaleString("de-DE", { minimumFractionDigits: 0, 
 const fNum = (v) => num(v).toLocaleString("de-DE", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const fEur0 = (v) => num(v).toLocaleString("de-DE", { style: "currency", currency: "EUR", minimumFractionDigits: 0, maximumFractionDigits: 0 });
 const toEur = (e, t) => (e.currency && e.currency !== "EUR" && num(t.fxRate) > 0 ? num(e.amount) / num(t.fxRate) : num(e.amount));
+/* Preise an Unterkunft, Verkehr, Ausflug, Parken: Euro oder die Fremdwährung der Reise */
+const priceEur = (x) => Math.round(toEur({ amount: x.price, currency: x.currency || "EUR" }, db.trips.find((t) => t.id === x.tripId) || {}) * 100) / 100;
+const fPrice = (x) => (x.currency && x.currency !== "EUR" ? `${num(x.price).toLocaleString("de-DE", { maximumFractionDigits: 2 })} ${esc(x.currency)} (≈ ${fMoney(priceEur(x))})` : fMoney(num(x.price)));
+function priceField(id, name, curName0, label, v) {
+  const fc = trip()?.foreignCurrency, cur = v.currency && v.currency !== "EUR" ? v.currency : "EUR", opts = [...new Set(["EUR", ...(fc ? [fc] : []), cur])];
+  const inp = `<input id="${id}" name="${name}" inputmode="decimal" value="${v.price ? fNum(v.price) : ""}" style="flex:1;min-width:0">`;
+  return `<label class="f" for="${id}">${label}<span class="row" style="gap:6px;flex-wrap:nowrap">${inp}${opts.length > 1 ? `<select name="${curName0}" aria-label="Währung" style="width:auto;flex:none">${opts.map((c) => `<option ${c === cur ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>` : `<span class="small muted" style="align-self:center">EUR</span>`}</span></label>`;
+}
+const curOf = (v) => (v && v !== "EUR" ? v : "");
 const sumEur = (list) => list.reduce((s, e) => s + e.eur, 0);
 
 /** Alle Ausgaben einer Reise: erfasste plus automatisch übernommene Preise aus Unterkünften und Verkehr. */
@@ -660,13 +669,13 @@ function ledger(t) {
   const linked = new Set(real.filter((e) => e.sourceId).map((e) => e.sourceId));
   const virt = [];
   for (const a of db.accommodations) if (a.tripId === t.id && num(a.price) > 0 && !linked.has(a.id))
-    virt.push({ id: "src-" + a.id, virtual: true, sourceType: "accommodations", sourceId: a.id, title: a.name, category: "Unterkunft", amount: a.price, currency: "EUR", status: "PLANNED", date: a.checkIn.slice(0, 10) });
+    virt.push({ id: "src-" + a.id, virtual: true, sourceType: "accommodations", sourceId: a.id, title: a.name, category: "Unterkunft", amount: a.price, currency: a.currency || "EUR", status: "PLANNED", date: a.checkIn.slice(0, 10) });
   for (const x of db.transports) if (x.tripId === t.id && num(x.price) > 0 && !linked.has(x.id))
-    virt.push({ id: "src-" + x.id, virtual: true, sourceType: "transports", sourceId: x.id, title: x.type === "PARKING" ? `Parken: ${x.fromLocation}` : `${typeLabel(x.type)} ${x.fromLocation} → ${x.toLocation}`, category: "Anreise & Verkehr", amount: x.price, currency: "EUR", status: "PLANNED", date: x.departAt.slice(0, 10) });
+    virt.push({ id: "src-" + x.id, virtual: true, sourceType: "transports", sourceId: x.id, title: x.type === "PARKING" ? `Parken: ${x.fromLocation}` : `${typeLabel(x.type)} ${x.fromLocation} → ${x.toLocation}`, category: "Anreise & Verkehr", amount: x.price, currency: x.currency || "EUR", status: "PLANNED", date: x.departAt.slice(0, 10) });
   for (const x of db.parking) if (x.tripId === t.id && num(x.price) > 0 && !linked.has(x.id))
-    virt.push({ id: "src-" + x.id, virtual: true, sourceType: "parking", sourceId: x.id, title: `Parken: ${x.name}`, category: "Anreise & Verkehr", amount: x.price, currency: "EUR", status: "PLANNED", date: x.startAt.slice(0, 10) });
+    virt.push({ id: "src-" + x.id, virtual: true, sourceType: "parking", sourceId: x.id, title: `Parken: ${x.name}`, category: "Anreise & Verkehr", amount: x.price, currency: x.currency || "EUR", status: "PLANNED", date: x.startAt.slice(0, 10) });
   for (const x of db.excursions) if (x.tripId === t.id && num(x.price) > 0 && !linked.has(x.id))
-    virt.push({ id: "src-" + x.id, virtual: true, sourceType: "excursions", sourceId: x.id, title: x.title, category: "Eintritte & Aktivitäten", amount: x.price, currency: "EUR", status: "PLANNED", date: x.date });
+    virt.push({ id: "src-" + x.id, virtual: true, sourceType: "excursions", sourceId: x.id, title: x.title, category: "Eintritte & Aktivitäten", amount: x.price, currency: x.currency || "EUR", status: "PLANNED", date: x.date });
   return [...real, ...virt].map((e) => ({ ...e, eur: toEur(e, t) })).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 }
 
@@ -751,8 +760,9 @@ function syncPaid(sourceType, x, paid, pm, oldPrice, title, category) {
   const ex = db.expenses.find((e) => e.sourceId === x.id);
   const amt = num(x.price);
   if (paid && amt > 0) {
-    if (ex) Object.assign(ex, { status: "PAID", paymentMethod: pm || "CARD", title, category, ...(ex.status !== "PAID" || num(oldPrice) !== amt ? { amount: String(amt) } : {}) });
-    else db.expenses.push({ id: uid(), tripId: x.tripId, date: new Date().toLocaleDateString("sv-SE"), title, category, amount: String(amt), currency: "EUR", status: "PAID", paymentMethod: pm || "CARD", sourceType, sourceId: x.id, notes: "" });
+    const cur = x.currency || "EUR";
+    if (ex) Object.assign(ex, { status: "PAID", paymentMethod: pm || "CARD", title, category, ...(ex.status !== "PAID" || num(oldPrice) !== amt || (ex.currency || "EUR") !== cur ? { amount: String(amt), currency: cur } : {}) });
+    else db.expenses.push({ id: uid(), tripId: x.tripId, date: new Date().toLocaleDateString("sv-SE"), title, category, amount: String(amt), currency: cur, status: "PAID", paymentMethod: pm || "CARD", sourceType, sourceId: x.id, notes: "" });
   } else if (!paid && ex) db.expenses = db.expenses.filter((e) => e !== ex);
 }
 const transTitle = (x) => (x.type === "PARKING" ? `Parken: ${x.fromLocation}` : `${typeLabel(x.type)} ${x.fromLocation} → ${x.toLocation}`);
@@ -772,7 +782,7 @@ function segFields(p, v, h = {}, req) {
     ${dtField(`f-${p}arrd`, `${p}arrDate`, "Ankunft Datum", arr.d, "date")}
     ${dtField(`f-${p}arrt`, `${p}arrTime`, "Ankunft Uhrzeit", arr.t, "time")}
     <label class="f" for="f-${p}seat">Sitzplatz<input id="f-${p}seat" name="${p}seat" value="${esc(v.seat)}"></label>
-    <label class="f" for="f-${p}price">Preis (EUR)<input id="f-${p}price" name="${p}price" inputmode="decimal" value="${v.price ? fNum(v.price) : ""}"></label>
+    ${priceField(`f-${p}price`, `${p}price`, `${p}cur`, "Preis", v)}
     ${paidFields(p, v.id)}
     <label class="f full" for="f-${p}notes">Notizen<textarea id="f-${p}notes" name="${p}notes" rows="2">${esc(v.notes)}</textarea></label>`;
 }
@@ -873,7 +883,7 @@ function readSeg(f, p, refYear, fb, name, required) {
   return { paid: Boolean(f.elements[p + "paid"]?.checked), pm: g("pm"), data: {
     type: g("type") || "OTHER", carrier: g("carrier") || fb.carrier || "", number: g("number"),
     bookingRef: g("bookingRef") || fb.bookingRef || "", fromLocation: from, toLocation: to,
-    departAt, arriveAt, seat: g("seat"), price: pr ? String(num(pr)) : "", notes: g("notes"),
+    departAt, arriveAt, seat: g("seat"), price: pr ? String(num(pr)) : "", currency: curOf(g("cur")), notes: g("notes"),
   } };
 }
 
@@ -942,7 +952,7 @@ function stayFields(p, v, req) {
     ${dtField(`f-${p}cot`, `${p}coTime`, "Check-out Uhrzeit", co.t, "time")}
     <label class="f" for="f-${p}bookingRef">Buchungscode<input id="f-${p}bookingRef" name="${p}bookingRef" value="${esc(v.bookingRef)}"></label>
     <label class="f" for="f-${p}phone">Telefon<input id="f-${p}phone" name="${p}phone" value="${esc(v.phone)}"></label>
-    <label class="f" for="f-${p}price">Preis gesamt (EUR)<input id="f-${p}price" name="${p}price" inputmode="decimal" value="${v.price ? fNum(v.price) : ""}"></label>
+    ${priceField(`f-${p}price`, `${p}price`, `${p}cur`, "Preis gesamt", v)}
     ${paidFields(p, v.id)}
     <label class="f" for="f-${p}url">Website<input id="f-${p}url" name="${p}url" value="${esc(v.url)}"></label>
     <label class="f full" for="f-${p}notes">Notizen<textarea id="f-${p}notes" name="${p}notes" rows="2">${esc(v.notes)}</textarea></label>`;
@@ -984,7 +994,7 @@ function readStay(f, p, ref, name) {
   const checkIn = ci + (cit ? "T" + cit : ""), checkOut = co + (cot ? "T" + cot : "");
   if (cmpDT(checkOut, checkIn) < 0) return { error: `${name}: Der Check-out liegt vor dem Check-in.` };
   const url = g("url"), pr = g("price");
-  return { paid: Boolean(f.elements[p + "paid"]?.checked), pm: g("pm"), data: { name: g("name"), address: g("address"), checkIn, checkOut, bookingRef: g("bookingRef"), phone: g("phone"), price: pr ? String(num(pr)) : "", url: url && !/^https?:\/\//i.test(url) ? "https://" + url : url, notes: g("notes") } };
+  return { paid: Boolean(f.elements[p + "paid"]?.checked), pm: g("pm"), data: { name: g("name"), address: g("address"), checkIn, checkOut, bookingRef: g("bookingRef"), phone: g("phone"), price: pr ? String(num(pr)) : "", currency: curOf(g("cur")), url: url && !/^https?:\/\//i.test(url) ? "https://" + url : url, notes: g("notes") } };
 }
 function saveStays(f) {
   const ref = +trip().startDate.slice(0, 4);
@@ -1020,7 +1030,7 @@ function excursionForm(x) {
     ${dtField("x-end", "endTime", "Ende", v.endTime, "time")}
     <label class="f" for="x-booking">Buchungscode<input id="x-booking" name="bookingRef" value="${esc(v.bookingRef)}"></label>
     <label class="f" for="x-persons">Personen<input id="x-persons" name="persons" inputmode="numeric" value="${esc(v.persons)}"></label>
-    <label class="f" for="x-price">Preis gesamt (EUR)<input id="x-price" name="price" inputmode="decimal" value="${v.price ? fNum(v.price) : ""}"></label>
+    ${priceField("x-price", "price", "cur", "Preis gesamt", v)}
     ${paidFields("x_", v.id)}
     <label class="f" for="x-phone">Telefon<input id="x-phone" name="phone" value="${esc(v.phone)}"></label>
     <label class="f full" for="x-url">Website<input id="x-url" name="url" value="${esc(v.url)}"></label>
@@ -1037,7 +1047,7 @@ function saveExcursion(f) {
   if (s1 === null || s2 === null) return "Uhrzeit nicht erkannt. Bitte so eingeben: 9:30 oder 930.";
   if (s1 && s2 && s2 < s1) return "Das Ende liegt vor dem Beginn.";
   const url = g("url"), pr = g("price");
-  const data = { kind: g("kind"), title: g("title") || g("kind"), provider: g("provider"), meetingPoint: g("meetingPoint"), date: d, startTime: s1, endTime: s2, bookingRef: g("bookingRef"), persons: g("persons"), price: pr ? String(num(pr)) : "", phone: g("phone"), url: url && !/^https?:\/\//i.test(url) ? "https://" + url : url, notes: g("notes") };
+  const data = { kind: g("kind"), title: g("title") || g("kind"), provider: g("provider"), meetingPoint: g("meetingPoint"), date: d, startTime: s1, endTime: s2, bookingRef: g("bookingRef"), persons: g("persons"), price: pr ? String(num(pr)) : "", currency: curOf(g("cur")), phone: g("phone"), url: url && !/^https?:\/\//i.test(url) ? "https://" + url : url, notes: g("notes") };
   let x = st.editing !== "new" ? db.excursions.find((e) => e.id === st.editing) : null;
   const oldPrice = x?.price;
   if (x) Object.assign(x, data); else { x = { id: uid(), tripId: st.tripId, ...data }; db.excursions.push(x); }
@@ -1123,7 +1133,7 @@ function parkingForm(x) {
     ${dtField("pk-et", "endTime", "Ausfahrt Uhrzeit", b.t, "time")}
     <label class="f" for="pk-booking">Buchungscode<input id="pk-booking" name="bookingRef" value="${esc(v.bookingRef)}"></label>
     <label class="f" for="pk-plate">Kennzeichen<input id="pk-plate" name="plate" value="${esc(v.plate)}"></label>
-    <label class="f" for="pk-price">Preis gesamt (EUR)<input id="pk-price" name="price" inputmode="decimal" value="${v.price ? fNum(v.price) : ""}"></label>
+    ${priceField("pk-price", "price", "cur", "Preis gesamt", v)}
     <label class="f" for="pk-phone">Telefon<input id="pk-phone" name="phone" value="${esc(v.phone)}"></label>
     <label class="f full" for="pk-notes">Notizen<textarea id="pk-notes" name="notes" rows="2">${esc(v.notes)}</textarea></label>
     <p class="err full" data-err hidden></p>
@@ -1139,7 +1149,7 @@ function saveParking(f) {
   const startAt = sd + (stt ? "T" + stt : ""), endAt = ed + (ett ? "T" + ett : "");
   if (cmpDT(endAt, startAt) < 0) return "Die Ausfahrt liegt vor der Einfahrt.";
   const pr = g("price");
-  const data = { name: g("name"), address: g("address"), startAt, endAt, bookingRef: g("bookingRef"), plate: g("plate"), price: pr ? String(num(pr)) : "", phone: g("phone"), notes: g("notes") };
+  const data = { name: g("name"), address: g("address"), startAt, endAt, bookingRef: g("bookingRef"), plate: g("plate"), price: pr ? String(num(pr)) : "", currency: curOf(g("cur")), phone: g("phone"), notes: g("notes") };
   const ex = st.editing !== "new-park" ? db.parking.find((x) => x.id === st.editing) : null;
   if (ex) Object.assign(ex, data); else db.parking.push({ id: uid(), tripId: st.tripId, ...data });
   return null;
@@ -1149,7 +1159,7 @@ function parkCard(x) {
   return `<div class="item"><div class="body"><div class="row" style="gap:8px"><span class="chip">🅿 Parken</span><b>${esc(x.name)}</b></div>
     ${x.address ? `<span class="small muted">${esc(x.address)}</span>` : ""}
     <span class="small">Einfahrt ${dtShort(x.startAt)} – Ausfahrt ${dtShort(x.endAt)} · ${parkDays(x)} ${parkDays(x) === 1 ? "Tag" : "Tage"}</span>
-    <span class="meta">${[x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.plate && `Kennzeichen ${esc(x.plate)}`, x.phone && `Tel. ${esc(x.phone)}`, num(x.price) && fMoney(num(x.price))].filter(Boolean).join(" · ")}</span>
+    <span class="meta">${[x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.plate && `Kennzeichen ${esc(x.plate)}`, x.phone && `Tel. ${esc(x.phone)}`, num(x.price) && fPrice(x)].filter(Boolean).join(" · ")}</span>
     ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}</div>${actions("parking", x.id)}</div>`;
 }
 function parkingSection() {
@@ -1987,7 +1997,7 @@ function viewList(kind) {
     if (kind === "transports" && x.type === "PARKING") return `<div class="item"><div class="body"><div class="row" style="gap:8px"><span class="chip">🅿 Parken</span><b>${esc(x.fromLocation)}</b>${x.carrier ? `<span class="small muted">${esc(x.carrier)}</span>` : ""}</div>
         ${mapLink(x.toLocation && x.toLocation !== x.fromLocation ? x.toLocation : x.fromLocation)}
         <span class="small">Einfahrt ${dtShort(x.departAt)}${x.arriveAt ? ` – Ausfahrt ${dtShort(x.arriveAt)}` : ""}</span>
-        <span class="meta">${[x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.number && `Kennzeichen ${esc(x.number)}`, num(x.price) && fMoney(num(x.price))].filter(Boolean).join(" · ")}</span>
+        <span class="meta">${[x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.number && `Kennzeichen ${esc(x.number)}`, num(x.price) && fPrice(x)].filter(Boolean).join(" · ")}</span>
         ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}${docBar(kind, x.id)}</div>${actions(kind, x.id)}</div>`;
     if (kind === "transports") return `<div class="ticket"><div class="main">
         <div class="row">${paired ? `<span class="chip leg">${legLabel(x)}</span>` : ""}<span class="chip">${TYPE_ICON[x.type] || "•"} ${esc(typeLabel(x.type))}</span><span class="small muted">${esc([x.carrier, x.number].filter(Boolean).join(" · "))}</span></div>
@@ -1995,14 +2005,14 @@ function viewList(kind) {
         <span class="arrow">→</span>
         <div class="to"><div class="t">${tm(x.arriveAt)}</div><div class="p">${esc(x.toLocation)}</div><div class="meta">${x.arriveAt ? fShort(x.arriveAt) : ""}</div></div></div>
         ${x.notes ? `<div class="meta">${esc(x.notes)}</div>` : ""}${docBar(kind, x.id)}</div>
-        <div class="stub"><div style="text-align:right">${x.bookingRef ? `<div class="eyebrow">Buchung</div><div class="mono">${esc(x.bookingRef)}</div>` : ""}${x.seat ? `<div class="eyebrow" style="margin-top:6px">Sitz</div><div class="mono">${esc(x.seat)}</div>` : ""}${num(x.price) ? `<div class="eyebrow" style="margin-top:6px">Preis</div><div class="mono">${fMoney(num(x.price))}</div>` : ""}</div>${actions(kind, x.id, paired ? "Ganze Verbindung löschen (alle Teilstrecken)?" : "Löschen?")}</div></div>`;
+        <div class="stub"><div style="text-align:right">${x.bookingRef ? `<div class="eyebrow">Buchung</div><div class="mono">${esc(x.bookingRef)}</div>` : ""}${x.seat ? `<div class="eyebrow" style="margin-top:6px">Sitz</div><div class="mono">${esc(x.seat)}</div>` : ""}${num(x.price) ? `<div class="eyebrow" style="margin-top:6px">Preis</div><div class="mono">${fPrice(x)}</div>` : ""}</div>${actions(kind, x.id, paired ? "Ganze Verbindung löschen (alle Teilstrecken)?" : "Löschen?")}</div></div>`;
     if (kind === "accommodations") return `<div class="item"><div class="body"><h3>${esc(x.name)}</h3>${mapLink(x.address)}${routeLink(x.name, x.address)}
         <span class="small">${dtShort(x.checkIn)} – ${dtShort(x.checkOut)} · ${(() => { const n = Math.max(1, Math.round((D(x.checkOut.slice(0, 10)) - D(x.checkIn.slice(0, 10))) / 864e5)); return n === 1 ? "1 Nacht" : n + " Nächte"; })()}</span>
-        <span class="meta">${[x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.phone && `Tel. ${esc(x.phone)}`, num(x.price) && fMoney(num(x.price))].filter(Boolean).join(" · ")}</span>
+        <span class="meta">${[x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.phone && `Tel. ${esc(x.phone)}`, num(x.price) && fPrice(x)].filter(Boolean).join(" · ")}</span>
         ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}${x.url ? `<a class="small" href="${esc(x.url)}" target="_blank" rel="noreferrer">Website öffnen</a>` : ""}${docBar(kind, x.id)}</div>${actions(kind, x.id)}</div>`;
     if (kind === "excursions") return `<div class="item"><div class="body"><div class="row" style="gap:8px"><span class="chip">${fShort(x.date)}${x.startTime ? ", " + x.startTime + (x.endTime ? "–" + x.endTime : "") : ""}</span><b>${esc(x.title)}</b>${x.kind && x.kind !== x.title ? `<span class="chip">${esc(x.kind)}</span>` : ""}</div>
         ${x.meetingPoint ? `<span class="small muted">Treffpunkt: ${mapLink(x.meetingPoint)}</span>${meetRoute(x)}` : ""}
-        <span class="meta">${[esc(x.provider || ""), x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.persons && `${esc(x.persons)} Pers.`, x.phone && `Tel. ${esc(x.phone)}`, num(x.price) && fMoney(num(x.price))].filter(Boolean).join(" · ")}</span>
+        <span class="meta">${[esc(x.provider || ""), x.bookingRef && `Buchung <span class="mono">${esc(x.bookingRef)}</span>`, x.persons && `${esc(x.persons)} Pers.`, x.phone && `Tel. ${esc(x.phone)}`, num(x.price) && fPrice(x)].filter(Boolean).join(" · ")}</span>
         ${x.notes ? `<span class="meta">${esc(x.notes)}</span>` : ""}${x.url ? `<a class="small" href="${esc(x.url)}" target="_blank" rel="noreferrer">Website öffnen</a>` : ""}${docBar(kind, x.id)}</div>${actions(kind, x.id)}</div>`;
     return `<div class="item"><input type="checkbox" id="v-${x.id}" data-act="visit" data-kind="${kind}" data-id="${x.id}" ${x.visited ? "checked" : ""} aria-label="besucht">
         <div class="body"><div class="row" style="gap:8px"><b class="${x.visited ? "done" : ""}">${esc(x.name)}</b>${x.category ? `<span class="chip">${esc(x.category)}</span>` : ""}</div>
@@ -2088,6 +2098,7 @@ function viewHints() {
     ["„bereits bezahlt“", "Bei Verkehr, Unterkünften und Ausflügen wird der Preis damit automatisch als bezahlte Ausgabe gebucht. Ohne Haken erscheint er unter „Noch zu bezahlen“."],
     ["📍 Aus Google Maps einfügen", "In Google Maps den Ort öffnen → Teilen → Kopieren, dann hier 📍 tippen. Kommt nur ein Link an: in Google Maps auf die Adresse tippen (wird kopiert) und erneut einfügen."],
     ["Umrechnungstabelle", "Im Reiter Ausgaben neben dem Kurs. „Kurs aktualisieren“ holt den Referenzkurs der Europäischen Zentralbank (nur in der Webfassung, nur auf Knopfdruck) und rechnet Tabelle und Ausgaben neu."],
+    ["Preise in Fremdwährung", "Bei Unterkünften, Verkehr, Ausflügen und Parken lässt sich neben dem Preis die Währung wählen (Euro oder die Fremdwährung der Reise). Umgerechnet wird immer mit dem aktuellen Kurs."],
     ["Kurs der Fremdwährung", "Mit Komma eingeben, z. B. 37,05. Die Probe darunter („100 € ≈ …“) zeigt, ob er stimmt."],
     ["🏠 Zeit zu Hause", "Erscheint nur, wenn bei der Reise eine Zeitverschiebung eingestellt ist (Reise → Bearbeiten)."],
     ["Packliste, eigene Dinge", "Sie stehen künftig auch unter „Aus üblichen Dingen auswählen“, außer mit dem Haken „nur für diese Reise“."],
@@ -2333,16 +2344,16 @@ function buildReport(t, o) {
     const rows = [], data = [];
     for (const g of groups) for (const x of g) {
       const label = journeyOf(x.id).length > 1 ? legLabel(x) : "";
-      rows.push([`${label ? label + "\n" : ""}${typeLabel(x.type)} ${[x.carrier, x.number].filter(Boolean).join(" ")}`.trim(), withNote(x.type === "PARKING" ? [x.fromLocation, x.toLocation !== x.fromLocation && x.toLocation, x.number && "Kennzeichen " + x.number].filter(Boolean).join("\n") : `${x.fromLocation} → ${x.toLocation}`, x.notes, o), dtShort(x.departAt), x.arriveAt ? dtShort(x.arriveAt) : "–", [x.bookingRef, x.seat && "Sitz " + x.seat].filter(Boolean).join("\n"), num(x.price) ? { eur: num(x.price) } : ""]);
-      data.push([label || "Fahrt", typeLabel(x.type), x.carrier || "", x.number || "", x.fromLocation, x.toLocation, deD(x.departAt), tOf(x.departAt), deD(x.arriveAt), tOf(x.arriveAt), x.bookingRef || "", x.seat || "", num(x.price) || null, ...(o.notes ? [x.notes || ""] : [])]);
+      rows.push([`${label ? label + "\n" : ""}${typeLabel(x.type)} ${[x.carrier, x.number].filter(Boolean).join(" ")}`.trim(), withNote(x.type === "PARKING" ? [x.fromLocation, x.toLocation !== x.fromLocation && x.toLocation, x.number && "Kennzeichen " + x.number].filter(Boolean).join("\n") : `${x.fromLocation} → ${x.toLocation}`, x.notes, o), dtShort(x.departAt), x.arriveAt ? dtShort(x.arriveAt) : "–", [x.bookingRef, x.seat && "Sitz " + x.seat].filter(Boolean).join("\n"), num(x.price) ? { eur: priceEur(x) } : ""]);
+      data.push([label || "Fahrt", typeLabel(x.type), x.carrier || "", x.number || "", x.fromLocation, x.toLocation, deD(x.departAt), tOf(x.departAt), deD(x.arriveAt), tOf(x.arriveAt), x.bookingRef || "", x.seat || "", (num(x.price) ? priceEur(x) : null), ...(o.notes ? [x.notes || ""] : [])]);
     }
     const pks = of("parking").filter((x) => (!o.to || x.startAt.slice(0, 10) <= o.to) && (!o.from || x.endAt.slice(0, 10) >= o.from)).sort((a, b) => a.startAt.localeCompare(b.startAt));
     const tBlocks = rows.length ? [{ t: "table", cols: [{ h: "Fahrt", w: 20 }, { h: "Strecke", w: 28 }, { h: "Abfahrt", w: 15 }, { h: "Ankunft", w: 15 }, { h: "Buchung · Sitz", w: 12 }, { h: "Preis", w: 10, r: 1 }], rows }] : [{ t: "empty", text: "Keine Fahrten im gewählten Zeitraum." }];
     if (pks.length) tBlocks.push({ t: "sub", text: "Parken" }, { t: "table", cols: [{ h: "Parkhaus", w: 30 }, { h: "Einfahrt", w: 17 }, { h: "Ausfahrt", w: 17 }, { h: "Buchung · Kennz.", w: 22 }, { h: "Preis", w: 14, r: 1 }],
-      rows: pks.map((x) => [withNote([x.name, x.address].filter(Boolean).join("\n"), x.notes, o), dtShort(x.startAt), dtShort(x.endAt), [x.bookingRef, x.plate].filter(Boolean).join("\n"), num(x.price) ? { eur: num(x.price) } : ""]) });
+      rows: pks.map((x) => [withNote([x.name, x.address].filter(Boolean).join("\n"), x.notes, o), dtShort(x.startAt), dtShort(x.endAt), [x.bookingRef, x.plate].filter(Boolean).join("\n"), num(x.price) ? { eur: priceEur(x) } : ""]) });
     secs.push({ key: "transports", title: "Verkehr", blocks: tBlocks,
       data2: pks.length ? { name: "Parken", cols: [{ h: "Parkhaus", wch: 26 }, { h: "Adresse", wch: 28 }, { h: "Einfahrt Datum" }, { h: "Einfahrt Uhrzeit" }, { h: "Ausfahrt Datum" }, { h: "Ausfahrt Uhrzeit" }, { h: "Tage" }, { h: "Buchungscode" }, { h: "Kennzeichen" }, { h: "Preis EUR", eur: 1 }, ...(o.notes ? [{ h: "Notizen", wch: 30 }] : [])],
-        rows: pks.map((x) => [x.name, x.address || "", deD(x.startAt), tOf(x.startAt), deD(x.endAt), tOf(x.endAt), parkDays(x), x.bookingRef || "", x.plate || "", num(x.price) || null, ...(o.notes ? [x.notes || ""] : [])]) } : null,
+        rows: pks.map((x) => [x.name, x.address || "", deD(x.startAt), tOf(x.startAt), deD(x.endAt), tOf(x.endAt), parkDays(x), x.bookingRef || "", x.plate || "", (num(x.price) ? priceEur(x) : null), ...(o.notes ? [x.notes || ""] : [])]) } : null,
       data: { cols: [{ h: "Fahrt" }, { h: "Art" }, { h: "Anbieter" }, { h: "Nummer" }, { h: "Von", wch: 22 }, { h: "Nach", wch: 22 }, { h: "Abfahrt Datum" }, { h: "Abfahrt Uhrzeit" }, { h: "Ankunft Datum" }, { h: "Ankunft Uhrzeit" }, { h: "Buchungscode" }, { h: "Sitz" }, { h: "Preis EUR", eur: 1 }, ...(o.notes ? [{ h: "Notizen", wch: 30 }] : [])], rows: data } });
   }
 
@@ -2351,9 +2362,9 @@ function buildReport(t, o) {
     const nights = (a) => Math.max(0, Math.round((D(a.checkOut.slice(0, 10)) - D(a.checkIn.slice(0, 10))) / 864e5));
     secs.push({ key: "accommodations", title: "Unterkünfte",
       blocks: list.length ? [{ t: "table", cols: [{ h: "Unterkunft", w: 32 }, { h: "Check-in", w: 15 }, { h: "Check-out", w: 15 }, { h: "Nächte", w: 8, r: 1 }, { h: "Buchung · Telefon", w: 18 }, { h: "Preis", w: 12, r: 1 }],
-        rows: list.map((a) => [withNote([a.name, a.address].filter(Boolean).join("\n"), a.notes, o), dtShort(a.checkIn), dtShort(a.checkOut), String(nights(a)), [a.bookingRef, a.phone].filter(Boolean).join("\n"), num(a.price) ? { eur: num(a.price) } : ""]) }] : [{ t: "empty", text: "Keine Unterkünfte im gewählten Zeitraum." }],
+        rows: list.map((a) => [withNote([a.name, a.address].filter(Boolean).join("\n"), a.notes, o), dtShort(a.checkIn), dtShort(a.checkOut), String(nights(a)), [a.bookingRef, a.phone].filter(Boolean).join("\n"), num(a.price) ? { eur: priceEur(a) } : ""]) }] : [{ t: "empty", text: "Keine Unterkünfte im gewählten Zeitraum." }],
       data: { cols: [{ h: "Name", wch: 26 }, { h: "Adresse", wch: 30 }, { h: "Check-in Datum" }, { h: "Check-in Uhrzeit" }, { h: "Check-out Datum" }, { h: "Check-out Uhrzeit" }, { h: "Nächte" }, { h: "Buchungscode" }, { h: "Telefon" }, { h: "Website", wch: 24 }, { h: "Preis EUR", eur: 1 }, ...(o.notes ? [{ h: "Notizen", wch: 30 }] : [])],
-        rows: list.map((a) => [a.name, a.address || "", deD(a.checkIn), tOf(a.checkIn), deD(a.checkOut), tOf(a.checkOut), nights(a), a.bookingRef || "", a.phone || "", a.url || "", num(a.price) || null, ...(o.notes ? [a.notes || ""] : [])]) } });
+        rows: list.map((a) => [a.name, a.address || "", deD(a.checkIn), tOf(a.checkIn), deD(a.checkOut), tOf(a.checkOut), nights(a), a.bookingRef || "", a.phone || "", a.url || "", (num(a.price) ? priceEur(a) : null), ...(o.notes ? [a.notes || ""] : [])]) } });
   }
 
   for (const [key, title, empty] of [["places", "Sehenswürdigkeiten", "Noch keine Sehenswürdigkeiten gesammelt."], ["restaurants", "Restaurants & Bars", "Noch keine Restaurants oder Bars gesammelt."]]) if (o.parts.has(key)) {
@@ -2368,9 +2379,9 @@ function buildReport(t, o) {
     const when = (x) => `${fShort(x.date)}${x.startTime ? "\n" + x.startTime + (x.endTime ? "–" + x.endTime : "") : ""}`;
     secs.push({ key: "excursions", title: "Gebuchte Ausflüge",
       blocks: list.length ? [{ t: "table", cols: [{ h: "Wann", w: 15 }, { h: "Ausflug", w: 35 }, { h: "Treffpunkt", w: 20 }, { h: "Buchung · Personen", w: 18 }, { h: "Preis", w: 12, r: 1 }],
-        rows: list.map((x) => [when(x), withNote([x.title, x.provider].filter(Boolean).join("\n"), x.notes, o), x.meetingPoint || "", [x.bookingRef, x.persons && x.persons + " Pers.", x.phone].filter(Boolean).join("\n"), num(x.price) ? { eur: num(x.price) } : ""]) }] : [{ t: "empty", text: "Keine Ausflüge im gewählten Zeitraum." }],
+        rows: list.map((x) => [when(x), withNote([x.title, x.provider].filter(Boolean).join("\n"), x.notes, o), x.meetingPoint || "", [x.bookingRef, x.persons && x.persons + " Pers.", x.phone].filter(Boolean).join("\n"), num(x.price) ? { eur: priceEur(x) } : ""]) }] : [{ t: "empty", text: "Keine Ausflüge im gewählten Zeitraum." }],
       data: { cols: [{ h: "Datum" }, { h: "Beginn" }, { h: "Ende" }, { h: "Ausflug", wch: 30 }, { h: "Anbieter", wch: 20 }, { h: "Treffpunkt", wch: 22 }, { h: "Buchungscode" }, { h: "Personen" }, { h: "Telefon" }, { h: "Website", wch: 24 }, { h: "Preis EUR", eur: 1 }, ...(o.notes ? [{ h: "Notizen", wch: 30 }] : [])],
-        rows: list.map((x) => [isoToDe(x.date), x.startTime || "", x.endTime || "", x.title, x.provider || "", x.meetingPoint || "", x.bookingRef || "", x.persons || "", x.phone || "", x.url || "", num(x.price) || null, ...(o.notes ? [x.notes || ""] : [])]) } });
+        rows: list.map((x) => [isoToDe(x.date), x.startTime || "", x.endTime || "", x.title, x.provider || "", x.meetingPoint || "", x.bookingRef || "", x.persons || "", x.phone || "", x.url || "", (num(x.price) ? priceEur(x) : null), ...(o.notes ? [x.notes || ""] : [])]) } });
   }
 
   if (o.parts.has("itinerary")) {
