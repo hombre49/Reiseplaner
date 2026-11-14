@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v15">
+<meta name="reiseplaner-version" content="web-v16">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -119,6 +119,8 @@ button.chipbtn[aria-pressed="true"] { background: var(--accent); color: var(--ac
 .days-left { color: var(--signal); font-weight: 600; font-size: .82rem; }
 
 /* Reisekopf */
+.hero-img h1, .hero-img .sub, .hero-img .back { text-shadow: 0 1px 3px rgba(0,0,0,.9), 0 0 12px rgba(0,0,0,.6); }
+.hero-img .ghost { background: rgba(0,0,0,.4); }
 .hero { border-radius: 14px; color: #fff; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
 .hero .back { color: rgba(255,255,255,.85); background: transparent; padding: 0; font-weight: 500; text-align: left; }
 .hero h1 { color: #fff; }
@@ -554,7 +556,7 @@ const SUGGEST = {
   Elektronik: ["Handy", "Ladekabel", "Powerbank", "Reiseadapter", "Kopfhörer", "Kamera", "E-Reader"],
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
-const APP_VERSION = "web-v15";
+const APP_VERSION = "web-v16";
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
 const PAYS = { CARD: "Karte", CASH: "bar" };
@@ -1892,7 +1894,7 @@ function viewTrip() {
   if (!t) { st.tripId = null; return viewTrips(); }
   const tabs = [["overview", "Übersicht"], ["transports", "Verkehr"], ["accommodations", "Unterkünfte"], ["places", "Orte"], ["restaurants", "Restaurants & Bars"], ["excursions", "Ausflüge"], ["itinerary", "Tagesplan"], ["expenses", "Ausgaben"], ["packing", "Packliste"], ["export", "Ausgabe"], ["emergency", "EMERGENCY"], ["hints", "Hinweise"]];
   const body = { overview: viewOverview, itinerary: viewItinerary, expenses: viewExpenses, packing: viewPacking, export: viewExport, emergency: () => viewEmergency(trip()), hints: viewHints }[st.tab] || (() => viewList(st.tab));
-  return `<div class="hero" style="background:${coverUrl[t.id] ? `linear-gradient(rgba(0,0,0,.18), rgba(0,0,0,.62)), url('${coverUrl[t.id]}') center/cover no-repeat, ${esc(t.coverColor)};min-height:170px;justify-content:space-between` : esc(t.coverColor)}">
+  return `<div class="hero ${coverUrl[t.id] ? "hero-img" : ""}" style="background:${coverUrl[t.id] ? `linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 50%, rgba(0,0,0,.5) 100%), url('${coverUrl[t.id]}') center/cover no-repeat, ${esc(t.coverColor)};min-height:190px;justify-content:space-between` : esc(t.coverColor)}">
       <button class="back" data-act="home">← Alle Reisen</button>
       <div class="row between" style="align-items:flex-end"><div><h1>${esc(t.title)}</h1><div class="sub">${esc(t.destination)} · ${fDate(t.startDate)} – ${fDate(t.endDate)}</div></div>
       <button class="ghost" data-act="edit-trip">Bearbeiten</button></div></div>
