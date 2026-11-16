@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v21">
+<meta name="reiseplaner-version" content="web-v22">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -563,7 +563,7 @@ const SUGGEST = {
   Elektronik: ["Handy", "Ladekabel", "Powerbank", "Reiseadapter", "Kopfhörer", "Kamera", "E-Reader"],
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
-const APP_VERSION = "web-v21";
+const APP_VERSION = "web-v22";
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
 const PAYS = { CARD: "Karte", CASH: "bar" };
@@ -2119,31 +2119,51 @@ function fxTable(t) {
   const block = (list) => { const h = Math.floor(list.length / 2), col = (a) => `<table class="fxt"><thead><tr><th>${esc(fc)}</th><th>Euro</th></tr></thead><tbody>${a.map((v) => `<tr><td>${nf(v)}</td><td>${eur(v)}</td></tr>`).join("")}</tbody></table>`; return `<div class="fxcard">${col(list.slice(0, h))}${col(list.slice(h))}</div>`; };
   const web = typeof WEB !== "undefined" && WEB;
   return `<div class="stack" style="gap:10px;margin-top:6px">
-    <div class="row between" style="gap:10px;flex-wrap:wrap"><b>1 EUR = ${fRate(r)} ${esc(fc)}</b>${web ? `<button type="button" data-act="fx-update">Kurs aktualisieren</button>` : ""}</div>
+    <div class="row between" style="gap:10px;flex-wrap:wrap"><b>1 EUR = ${fRate(r)} ${esc(fc)}</b>${web ? (fxRun ? `<button type="button" class="ghost" data-act="fx-cancel">Abbrechen</button>` : `<button type="button" data-act="fx-update">Kurs aktualisieren</button>`) : ""}</div>
     <span class="hint" id="fx-note" aria-live="polite">${esc(st.fxNote || (t.fxDate ? `${t.fxSrc || "Referenzkurs der Europäischen Zentralbank"} vom ${isoToDe(t.fxDate)}.` : web ? "Von Hand eingetragener Kurs. „Kurs aktualisieren“ holt den Referenzkurs der Europäischen Zentralbank; übertragen wird nur das Währungskürzel." : "Von Hand eingetragener Kurs."))}</span>
     <div class="fxwrap">${block(small)}${block(big)}</div></div>`;
 }
+/* Kursabruf: je Dienst höchstens FX_WAIT Sekunden, Anzeige mit mitlaufenden Sekunden, abbrechbar */
+const FX_WAIT = 30;
+let fxRun = null;
 async function fxUpdate() {
-  const t = trip(), fc = t?.foreignCurrency; if (!fc) return;
+  const t = trip(), fc = t?.foreignCurrency; if (!fc || fxRun) return;
   const say = (m) => { st.fxNote = m; const el = document.getElementById("fx-note"); if (el) el.textContent = m; };
-  say("Kurs wird abgerufen …");
   const EZB = "Referenzkurs der Europäischen Zentralbank";
   const sources = [
-    [`https://api.frankfurter.dev/v1/latest?base=EUR&symbols=${fc}`, (j) => [j?.rates?.[fc], j?.date], EZB],
-    [`https://api.frankfurter.app/latest?from=EUR&to=${fc}`, (j) => [j?.rates?.[fc], j?.date], EZB],
-    [`https://open.er-api.com/v6/latest/EUR`, (j) => [j?.rates?.[fc], j?.time_last_update_utc ? new Date(j.time_last_update_utc).toLocaleDateString("sv-SE") : ""], "Marktkurs (open.er-api.com)"],
+    [`https://api.frankfurter.dev/v1/latest?base=EUR&symbols=${fc}`, (j) => [j?.rates?.[fc], j?.date], EZB, "EZB-Kurs (frankfurter.dev)"],
+    [`https://api.frankfurter.app/latest?from=EUR&to=${fc}`, (j) => [j?.rates?.[fc], j?.date], EZB, "EZB-Kurs (frankfurter.app)"],
+    [`https://open.er-api.com/v6/latest/EUR`, (j) => [j?.rates?.[fc], j?.time_last_update_utc ? new Date(j.time_last_update_utc).toLocaleDateString("sv-SE") : ""], "Marktkurs (open.er-api.com)", "Marktkurs (open.er-api.com)"],
   ];
-  for (const [url, pick, label] of sources) {
+  const run = (fxRun = { cancelled: false, ctl: null, timer: null });
+  const t0 = Date.now(); let src = "", s0 = 0;
+  const tick = () => say(`Frage ${src} … ${Math.round((Date.now() - s0) / 1000)} s (gesamt ${Math.round((Date.now() - t0) / 1000)} s)`);
+  const finish = (msg) => { clearInterval(run.timer); fxRun = null; st.fxNote = msg; if (!busy()) render(); else say(msg); };
+  if (!busy()) render();
+  run.timer = setInterval(tick, 1000);
+  const tried = [];
+  for (const [url, pick, label, name] of sources) {
+    if (run.cancelled) return;
+    src = name; s0 = Date.now(); tick();
+    const ctl = (run.ctl = new AbortController()), to = setTimeout(() => ctl.abort(), FX_WAIT * 1000);
     try {
-      const res = await fetch(url, { cache: "no-store" }); if (!res.ok) continue;
+      const res = await fetch(url, { cache: "no-store", signal: ctl.signal });
+      if (!res.ok) { tried.push(`${name}: Fehler ${res.status}`); continue; }
       const [rv, dv] = pick(await res.json()), rate = Number(rv);
-      if (!(rate > 0)) continue;
+      if (!(rate > 0)) { tried.push(`${name}: kein Kurs für ${fc}`); continue; }
+      if (run.cancelled) return;
       const old = num(t.fxRate); t.fxRate = rate; t.fxDate = dv || new Date().toLocaleDateString("sv-SE"); t.fxSrc = label; save();
-      st.fxNote = `Aktualisiert: ${label} vom ${isoToDe(t.fxDate)}${old && Math.abs(old - rate) > 1e-9 ? ` (vorher ${fRate(old)})` : ", unverändert"}.`;
-      if (!busy()) render(); return;
-    } catch {}
+      return finish(`Aktualisiert nach ${Math.round((Date.now() - t0) / 1000)} s: ${label} vom ${isoToDe(t.fxDate)}${old && Math.abs(old - rate) > 1e-9 ? ` (vorher ${fRate(old)})` : ", unverändert"}.`);
+    } catch {
+      if (run.cancelled) return;
+      tried.push(`${name}: ${Date.now() - s0 >= FX_WAIT * 1000 - 200 ? `keine Antwort nach ${FX_WAIT} s` : "nicht erreichbar"}`);
+    } finally { clearTimeout(to); }
   }
-  say("Der Kurs konnte nicht abgerufen werden (kein Internet?). Die Tabelle rechnet weiter mit dem gespeicherten Kurs.");
+  finish(`Der Kurs konnte nicht abgerufen werden (${tried.join("; ")}). Die Tabelle rechnet weiter mit dem gespeicherten Kurs.`);
+}
+function fxCancel() {
+  if (!fxRun) return; fxRun.cancelled = true; clearInterval(fxRun.timer); try { fxRun.ctl?.abort(); } catch {}
+  fxRun = null; st.fxNote = "Abruf abgebrochen. Die Tabelle rechnet weiter mit dem gespeicherten Kurs."; if (!busy()) render();
 }
 /* Während der Reise: was heute bezahlt wurde, gemessen am Tagesbudget */
 function spentToday(t, s, nDays) {
@@ -3137,6 +3157,7 @@ $app.addEventListener("click", (e) => {
     case "budget-toggle": st.budgetOpen = !st.budgetOpen; st.error = null; break;
     case "fx-table": st.fxTable = !st.fxTable; st.fxNote = ""; break;
     case "fx-update": fxUpdate(); return;
+    case "fx-cancel": fxCancel(); return;
     case "pay": reset(); st.payId = id; break;
     case "pay-cancel": st.payId = null; st.error = null; break;
     case "exp-edit": reset(); st.expEdit = id; break;
