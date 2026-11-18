@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="Reiseplaner">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#0f5c52">
-<meta name="reiseplaner-version" content="web-v22">
+<meta name="reiseplaner-version" content="web-v23">
 <style>
 :root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
 body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -563,7 +563,7 @@ const SUGGEST = {
   Elektronik: ["Handy", "Ladekabel", "Powerbank", "Reiseadapter", "Kopfhörer", "Kamera", "E-Reader"],
   Sonstiges: ["Sonnenbrille", "Lesebrille", "Regenschirm", "Reiseführer", "Trinkflasche", "Tagesrucksack", "Haustürschlüssel", "Snacks für unterwegs"],
 };
-const APP_VERSION = "web-v22";
+const APP_VERSION = "web-v23";
 const TYPES = { FLIGHT: "Flug", TRAIN: "Zug", BUS: "Bus", CAR: "Auto", FERRY: "Fähre", PARKING: "Parken", OTHER: "Sonstiges" };
 const typeLabel = (k) => TYPES[k] || k || "Sonstiges";
 const PAYS = { CARD: "Karte", CASH: "bar" };
@@ -2110,6 +2110,18 @@ function viewHints() {
   ];
   return `<div class="stack" style="gap:12px"><h2>Hinweise</h2><div class="panel stack" style="gap:14px">${H.map(([h, t]) => `<div class="stack" style="gap:2px"><b>${esc(h)}</b><span class="small" style="text-align:justify;hyphens:auto">${esc(t)}</span></div>`).join("")}</div></div>`;
 }
+/* Kurszeile und Tabelle als eigener Bereich, damit ein Kursabruf sie auch bei geöffnetem Formular erneuern kann */
+function fxArea(t) {
+  return `<div id="fx-area">${t.foreignCurrency && num(t.fxRate) > 0 ? `<div class="row" style="gap:12px;flex-wrap:wrap;align-items:center"><span class="small muted">Kurs: 1 EUR = ${fRate(t.fxRate)} ${esc(t.foreignCurrency)} (${esc(curName(t.foreignCurrency))})${t.fxDate ? ` · Stand ${isoToDe(t.fxDate)}` : ""}</span><button type="button" class="ghost" data-act="fx-table">${st.fxTable ? "Umrechnungstabelle schließen" : "Umrechnungstabelle"}</button></div>${st.fxTable ? fxTable(t) : ""}` : ""}</div>`;
+}
+/* Nach einem Kursabruf: ganze Seite neu zeichnen; ist ein Formular offen, nur Kursbereich und Kursfeld erneuern, damit keine Eingabe verloren geht */
+function fxRefresh() {
+  if (!busy()) { render(); return; }
+  const t = trip(); if (!t) return;
+  const area = document.getElementById("fx-area"); if (area) area.outerHTML = fxArea(t);
+  const f = document.getElementById("b-fx"), fc = document.getElementById("b-fc");
+  if (f && t.fxRate && (!fc || fc.value === t.foreignCurrency)) { f.value = fRate(t.fxRate); f.dispatchEvent(new Event("input", { bubbles: true })); }
+}
 /* Umrechnungstabelle Fremdwährung → Euro; Stufen richten sich nach der Größenordnung des Kurses */
 function fxTable(t) {
   const fc = t.foreignCurrency, r = num(t.fxRate), u = Math.pow(10, Math.floor(Math.log10(r)));
@@ -2138,8 +2150,8 @@ async function fxUpdate() {
   const run = (fxRun = { cancelled: false, ctl: null, timer: null });
   const t0 = Date.now(); let src = "", s0 = 0;
   const tick = () => say(`Frage ${src} … ${Math.round((Date.now() - s0) / 1000)} s (gesamt ${Math.round((Date.now() - t0) / 1000)} s)`);
-  const finish = (msg) => { clearInterval(run.timer); fxRun = null; st.fxNote = msg; if (!busy()) render(); else say(msg); };
-  if (!busy()) render();
+  const finish = (msg) => { clearInterval(run.timer); fxRun = null; st.fxNote = msg; fxRefresh(); };
+  fxRefresh();
   run.timer = setInterval(tick, 1000);
   const tried = [];
   for (const [url, pick, label, name] of sources) {
@@ -2163,7 +2175,7 @@ async function fxUpdate() {
 }
 function fxCancel() {
   if (!fxRun) return; fxRun.cancelled = true; clearInterval(fxRun.timer); try { fxRun.ctl?.abort(); } catch {}
-  fxRun = null; st.fxNote = "Abruf abgebrochen. Die Tabelle rechnet weiter mit dem gespeicherten Kurs."; if (!busy()) render();
+  fxRun = null; st.fxNote = "Abruf abgebrochen. Die Tabelle rechnet weiter mit dem gespeicherten Kurs."; fxRefresh();
 }
 /* Während der Reise: was heute bezahlt wurde, gemessen am Tagesbudget */
 function spentToday(t, s, nDays) {
@@ -2248,7 +2260,7 @@ function viewExpenses() {
       <span class="small muted">Ø ${fMoney(used / nDays)} pro Reisetag bei ${nDays} Tagen${s.budget ? ` · das Budget erlaubt Ø ${fMoney(s.budget / nDays)}` : ""}</span>
       ${s.budget ? "" : `<span class="small muted">Noch kein Budget festgelegt. Über „Budget &amp; Währung“ eintragen.</span>`}
       ${s.total && s.catSum > s.total ? `<span class="small" style="color:var(--warn)">Die Teilbudgets ergeben zusammen ${fMoney(s.catSum)} und liegen damit über dem Gesamtbudget von ${fMoney(s.total)}.</span>` : ""}
-      ${t.foreignCurrency && num(t.fxRate) > 0 ? `<div class="row" style="gap:12px;flex-wrap:wrap;align-items:center"><span class="small muted">Kurs: 1 EUR = ${fRate(t.fxRate)} ${esc(t.foreignCurrency)} (${esc(curName(t.foreignCurrency))})${t.fxDate ? ` · Stand ${isoToDe(t.fxDate)}` : ""}</span><button type="button" class="ghost" data-act="fx-table">${st.fxTable ? "Umrechnungstabelle schließen" : "Umrechnungstabelle"}</button></div>${st.fxTable ? fxTable(t) : ""}` : ""}
+      ${fxArea(t)}
     </div>
     <form class="panel grid2" data-form="expense">
       <span class="eyebrow full">Schnell erfassen</span>
